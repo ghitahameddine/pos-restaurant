@@ -1,0 +1,2066 @@
+import { useEffect, useMemo, useState } from 'react';
+import { menuProducts } from '../../data/menuProducts';
+import { formatPrice } from '../../utils/format';
+import {
+  addStoredOrder,
+  dedupeOrders,
+  getStoredOrders,
+  saveStoredOrders,
+  updateStoredOrder,
+} from '../../utils/ordersStorage';
+import {
+  getBillRequests,
+  saveBillRequests,
+  updateBillRequest,
+} from '../../utils/billRequestsStorage';
+import { markQrSessionBillRequested } from '../../utils/qrSessionStorage';
+import {
+  createApiBillRequest,
+  createApiOrder,
+  fetchApiBillRequests,
+  fetchApiOrders,
+  forgotPasswordApi,
+  isBackendOrder,
+  loginApi,
+  printApiBillRequest,
+  resetPasswordApi,
+  subscribeRealtime,
+  updateApiOrderStatus,
+} from '../../utils/api';
+
+const SERVER_AUTH_KEY = 'pos2-server-authenticated';
+
+function formatTicketDate(dateValue) {
+  const date = dateValue ? new Date(dateValue) : new Date();
+
+  return new Intl.DateTimeFormat('fr-MA', {
+    dateStyle: 'short',
+    timeStyle: 'short',
+  }).format(date);
+}
+
+function createEmptyServerOrder() {
+  return {
+    table: '',
+    clientName: 'Client accompagne',
+    comment: '',
+    items: [],
+  };
+}
+
+function getStatusLabel(status) {
+  const labels = {
+    'En attente de validation serveur': 'A valider',
+    'Confirmee par le serveur': 'Confirmee',
+    'Prete / pickup': 'Prete / pickup',
+    Servie: 'Servie',
+    Payee: 'Payee',
+    'Annulee par le serveur': 'Annulee',
+  };
+
+  return labels[status] || status;
+}
+
+function isReadyForPickup(order) {
+  const status = String(order.status || '').toLowerCase();
+
+  return status.includes('prete') || status.includes('pickup');
+}
+
+function isServedOrder(order) {
+  const status = String(order?.status || '')
+    .trim()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+
+  return status === 'served' || status === 'servie' || status === 'servi';
+}
+
+function isPaidOrder(order) {
+  const status = String(order?.status || '')
+    .trim()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+
+  return status === 'paid' || status === 'payee';
+}
+
+function isCancelledOrder(order) {
+  const status = String(order?.status || '')
+    .trim()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+
+  return status === 'cancelled' || status.includes('annulee') || status.includes('annule');
+}
+
+function isPendingValidationOrder(order) {
+  const status = String(order?.status || '')
+    .trim()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+
+  return status === 'pending_server_validation' || status.includes('attente de validation');
+}
+
+function isConfirmedOrder(order) {
+  const status = String(order?.status || '')
+    .trim()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+
+  return status === 'confirmed' || status === 'in_kitchen' || status.includes('confirmee');
+}
+
+function isBillableOrder(order) {
+  return (
+    Boolean(order?.items?.length) &&
+    !isPendingValidationOrder(order) &&
+    !isCancelledOrder(order) &&
+    !isPaidOrder(order)
+  );
+}
+
+function getOrderStage(order) {
+  if (!order) return 'unknown';
+  if (isPendingValidationOrder(order)) return 'validate';
+  if (isConfirmedOrder(order)) return 'kitchen';
+  if (isReadyForPickup(order)) return 'pickup';
+  if (isServedOrder(order)) return 'payment';
+  if (isPaidOrder(order)) return 'paid';
+  if (isCancelledOrder(order)) return 'cancelled';
+
+  return 'unknown';
+}
+
+function getPrimaryActionLabel(order) {
+  const stage = getOrderStage(order);
+
+  if (stage === 'validate') return 'Confirmer';
+  if (stage === 'kitchen') return 'En cuisine';
+  if (stage === 'pickup') return 'Servir';
+  if (stage === 'payment') return 'Encaisser';
+  if (stage === 'paid') return 'Payee';
+  if (stage === 'cancelled') return 'Annulee';
+
+  return 'Aucune action';
+}
+
+function ServerPage() {
+  const [isAuthenticated, setIsAuthenticated] = useState(
+    () => sessionStorage.getItem(SERVER_AUTH_KEY) === 'true',
+  );
+  const [credentials, setCredentials] = useState({ phone: '0600000000', password: '' });
+  const [serverAuthMode, setServerAuthMode] = useState('login');
+  const [serverOtp, setServerOtp] = useState('');
+  const [serverNewPassword, setServerNewPassword] = useState('');
+  const [serverAuthMessage, setServerAuthMessage] = useState('');
+  const [serverAuthError, setServerAuthError] = useState('');
+  const [serverAuthLoading, setServerAuthLoading] = useState(false);
+  const [orders, setOrders] = useState(() => dedupeOrders(getStoredOrders()));
+  const [billRequests, setBillRequests] = useState(() => getBillRequests());
+  const [activeTicket, setActiveTicket] = useState(null);
+  const [serverComments, setServerComments] = useState({});
+  const [serverOrder, setServerOrder] = useState(createEmptyServerOrder);
+  const [activeServerView, setActiveServerView] = useState('orders');
+  const [selectedOrderId, setSelectedOrderId] = useState(null);
+  const [tableFilter, setTableFilter] = useState('all');
+  const [historyFilter, setHistoryFilter] = useState('all');
+  const [historySearch, setHistorySearch] = useState('');
+  const [paymentMethods, setPaymentMethods] = useState({});
+  const [activeServerCategory, setActiveServerCategory] = useState('Tous');
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const refreshServerData = async () => {
+      try {
+        const [apiOrders, apiBillRequests] = await Promise.all([
+          fetchApiOrders(),
+          fetchApiBillRequests(),
+        ]);
+
+        if (cancelled) return;
+
+        const cleanApiOrders = dedupeOrders(apiOrders);
+        saveStoredOrders(cleanApiOrders);
+        saveBillRequests(apiBillRequests);
+        setOrders(cleanApiOrders);
+        setBillRequests(apiBillRequests);
+      } catch (error) {
+        if (cancelled) return;
+        setOrders(dedupeOrders(getStoredOrders()));
+        setBillRequests(getBillRequests());
+      }
+    };
+
+    refreshServerData();
+    const intervalId = window.setInterval(refreshServerData, 15000);
+    const unsubscribeRealtime = subscribeRealtime({
+      onOrder: (nextOrder) => {
+        setOrders((currentOrders) => {
+          const exists = currentOrders.some(
+            (order) =>
+              order.id === nextOrder.id ||
+              (order.backendId && nextOrder.backendId && order.backendId === nextOrder.backendId),
+          );
+          const nextOrders = dedupeOrders(exists
+            ? currentOrders.map((order) =>
+                order.id === nextOrder.id ||
+                (order.backendId && nextOrder.backendId && order.backendId === nextOrder.backendId)
+                  ? nextOrder
+                  : order,
+              )
+            : [nextOrder, ...currentOrders]);
+          saveStoredOrders(nextOrders);
+          return nextOrders;
+        });
+      },
+      onBillRequest: (nextBillRequest) => {
+        setBillRequests((currentRequests) => {
+          const exists = currentRequests.some((request) => request.id === nextBillRequest.id);
+          const nextRequests = exists
+            ? currentRequests.map((request) =>
+                request.id === nextBillRequest.id ? nextBillRequest : request,
+              )
+            : [nextBillRequest, ...currentRequests];
+          saveBillRequests(nextRequests);
+          return nextRequests;
+        });
+      },
+      onError: () => {
+        // Le refresh de secours prend le relais si le canal temps reel tombe.
+      },
+    });
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+      unsubscribeRealtime();
+    };
+  }, []);
+
+  const visibleOrders = useMemo(() => dedupeOrders(orders), [orders]);
+
+  const pendingOrders = useMemo(
+    () => visibleOrders.filter((order) => order.status === 'En attente de validation serveur'),
+    [visibleOrders],
+  );
+
+  const handledOrders = useMemo(
+    () => visibleOrders.filter((order) => order.status !== 'En attente de validation serveur'),
+    [visibleOrders],
+  );
+
+  const confirmedOrders = useMemo(
+    () => visibleOrders.filter((order) => order.status === 'Confirmee par le serveur'),
+    [visibleOrders],
+  );
+
+  const pickupOrders = useMemo(() => visibleOrders.filter((order) => isReadyForPickup(order)), [visibleOrders]);
+
+  const servedOrders = useMemo(() => visibleOrders.filter(isServedOrder), [visibleOrders]);
+  const paidOrders = useMemo(() => visibleOrders.filter(isPaidOrder), [visibleOrders]);
+  const billableOrders = useMemo(() => visibleOrders.filter(isBillableOrder), [visibleOrders]);
+
+  const pendingBillRequests = useMemo(
+    () => billRequests.filter((request) => request.status === 'En attente'),
+    [billRequests],
+  );
+
+  const billRequestOrders = useMemo(
+    () =>
+      pendingBillRequests
+        .map((request) => {
+          const requestedOrder =
+            visibleOrders.find((order) => order.id === request.orderId) ||
+            visibleOrders.find(
+              (order) =>
+                request.backendOrderId &&
+                order.backendId &&
+                Number(request.backendOrderId) === Number(order.backendId),
+            );
+
+          if (requestedOrder) return requestedOrder;
+
+          return visibleOrders.find(
+            (order) =>
+              String(order.table) === String(request.table) &&
+              !isCancelledOrder(order) &&
+              !isPaidOrder(order),
+          );
+        })
+        .filter(Boolean),
+    [pendingBillRequests, visibleOrders],
+  );
+
+  const paymentOrders = useMemo(() => {
+    const orderMap = new Map();
+    [...billableOrders, ...billRequestOrders].forEach((order) => {
+      orderMap.set(order.backendId ? `backend-${order.backendId}` : order.id, order);
+    });
+    return Array.from(orderMap.values());
+  }, [billRequestOrders, billableOrders]);
+
+  const paymentOrdersWithBillInfo = useMemo(
+    () =>
+      paymentOrders.map((order) => ({
+        order,
+        billRequest:
+          pendingBillRequests.find((request) => request.orderId === order.id) ||
+          pendingBillRequests.find(
+            (request) =>
+              request.backendOrderId &&
+              order.backendId &&
+              Number(request.backendOrderId) === Number(order.backendId),
+          ) ||
+          pendingBillRequests.find(
+            (request) => !request.orderId && String(request.table) === String(order.table),
+          ) ||
+          null,
+      })),
+    [paymentOrders, pendingBillRequests],
+  );
+
+  const paymentOrdersWithBillRequestCount = useMemo(
+    () => paymentOrdersWithBillInfo.filter(({ billRequest }) => Boolean(billRequest)).length,
+    [paymentOrdersWithBillInfo],
+  );
+
+  const activeServiceOrders = useMemo(
+    () => [...pendingOrders, ...confirmedOrders, ...pickupOrders],
+    [confirmedOrders, pendingOrders, pickupOrders],
+  );
+  const orderStatusColumns = useMemo(
+    () => [
+      {
+        id: 'validate',
+        title: 'A valider',
+        description: 'Verifier a la table avant envoi.',
+        orders: pendingOrders,
+      },
+      {
+        id: 'kitchen',
+        title: 'En cuisine',
+        description: 'Commandes confirmees en preparation.',
+        orders: confirmedOrders,
+      },
+      {
+        id: 'pickup',
+        title: 'Pretes',
+        description: 'Plateaux a recuperer au comptoir.',
+        orders: pickupOrders,
+      },
+    ],
+    [confirmedOrders, pendingOrders, pickupOrders],
+  );
+  const serverCategories = useMemo(
+    () => ['Tous', ...new Set(menuProducts.map((product) => product.category))],
+    [],
+  );
+  const filteredServerProducts = useMemo(() => {
+    if (activeServerCategory === 'Tous') {
+      return menuProducts;
+    }
+
+    return menuProducts.filter((product) => product.category === activeServerCategory);
+  }, [activeServerCategory]);
+
+  const tableOverview = useMemo(
+    () =>
+      Array.from({ length: 10 }, (_, index) => {
+        const tableNumber = String(index + 1);
+        const tableOrders = orders.filter(
+          (order) =>
+            String(order.table) === tableNumber &&
+            !['Annulee par le serveur', 'Payee'].includes(order.status),
+        );
+        const hasBillRequest = pendingBillRequests.some(
+          (request) => String(request.table) === tableNumber,
+        );
+        const activeOrder = tableOrders[0];
+        const itemsCount = tableOrders.reduce(
+          (sum, order) =>
+            sum +
+            (order.items || []).reduce(
+              (itemSum, item) => itemSum + Number(item.quantity || 0),
+              0,
+            ),
+          0,
+        );
+        const total = tableOrders.reduce((sum, order) => sum + Number(order.total || 0), 0);
+        const hasServedOrder = tableOrders.some(isServedOrder);
+        const status = hasBillRequest || hasServedOrder ? 'payment' : activeOrder ? 'dine' : 'available';
+
+        return {
+          id: tableNumber,
+          status,
+          label: status === 'payment' ? 'Addition' : status === 'dine' ? 'En service' : 'Libre',
+          guests: itemsCount,
+          total,
+          activeOrderId: activeOrder?.id || null,
+        };
+      }),
+    [visibleOrders, pendingBillRequests],
+  );
+
+  const filteredTables = useMemo(() => {
+    if (tableFilter === 'all') return tableOverview;
+    return tableOverview.filter((table) => table.status === tableFilter);
+  }, [tableFilter, tableOverview]);
+
+  const filteredHistoryOrders = useMemo(() => {
+    const normalizedSearch = historySearch.trim().toLowerCase();
+
+    return handledOrders.filter((order) => {
+      const stage = getOrderStage(order);
+      const matchesFilter =
+        historyFilter === 'all' ||
+        (historyFilter === 'confirmed' && order.status === 'Confirmee par le serveur') ||
+        (historyFilter === 'paid' && order.status === 'Payee') ||
+        (historyFilter === 'cancelled' && order.status === 'Annulee par le serveur') ||
+        (historyFilter === 'kitchen' && stage === 'kitchen');
+      const matchesSearch =
+        normalizedSearch.length === 0 ||
+        String(order.table).toLowerCase().includes(normalizedSearch) ||
+        String(order.id).toLowerCase().includes(normalizedSearch);
+
+      return matchesFilter && matchesSearch;
+    });
+  }, [handledOrders, historyFilter, historySearch]);
+
+  const getServerItemQuantity = (productId) =>
+    serverOrder.items.find((item) => item.id === productId)?.quantity || 0;
+
+  const buildBillFromRequest = (request) => {
+    const requestedOrder = orders.find(
+      (order) =>
+        order.id === request.orderId &&
+        String(order.table) === String(request.table) &&
+        !['Annulee par le serveur', 'Payee'].includes(order.status),
+    );
+    const latestTableOrder = request.orderId
+      ? null
+      : orders.find(
+          (order) =>
+            String(order.table) === String(request.table) &&
+            !['Annulee par le serveur', 'Payee'].includes(order.status),
+        );
+    const billOrder = requestedOrder || latestTableOrder;
+
+    if (billOrder) {
+      return {
+        ...request,
+        orderId: billOrder.id,
+        items: billOrder.items || [],
+        total: billOrder.total || 0,
+        clientName: billOrder.clientName || request.clientName,
+        comment: billOrder.comment || request.comment,
+        createdAt: billOrder.createdAt || request.createdAt,
+      };
+    }
+
+    if (request.items?.length > 0) {
+      return request;
+    }
+
+    return {
+      ...request,
+      orderId: request.orderId || 'Commande introuvable',
+      items: [],
+      total: 0,
+    };
+  };
+
+  const findBillRequestForOrder = (order) => {
+    if (!order) return null;
+
+    return (
+      pendingBillRequests.find((request) => request.orderId === order.id) ||
+      pendingBillRequests.find(
+        (request) =>
+          request.backendOrderId &&
+          order.backendId &&
+          Number(request.backendOrderId) === Number(order.backendId),
+      ) ||
+      pendingBillRequests.find(
+        (request) => !request.orderId && String(request.table) === String(order.table),
+      ) ||
+      null
+    );
+  };
+
+  const billingSelectableOrders = useMemo(() => {
+    const uniqueOrders = new Map(paymentOrders.map((order) => [order.id, order]));
+
+    return Array.from(uniqueOrders.values());
+  }, [paymentOrders]);
+
+  const selectableOrders = useMemo(() => {
+    if (activeServerView === 'history') return handledOrders;
+    if (activeServerView === 'billing') return billingSelectableOrders;
+    return activeServiceOrders;
+  }, [activeServerView, activeServiceOrders, billingSelectableOrders, handledOrders]);
+
+  const selectedOrder =
+    selectableOrders.find((order) => order.id === selectedOrderId) || selectableOrders[0] || null;
+  const selectedBillRequest = findBillRequestForOrder(selectedOrder);
+  const showSelectedOrderPanel = activeServerView === 'orders';
+
+  const openNewOrderForTable = (tableId) => {
+    setServerOrder((currentOrder) => ({ ...currentOrder, table: tableId }));
+    setActiveServerView('menu');
+  };
+
+  const selectTableOrder = (table) => {
+    if (!table.activeOrderId) {
+      openNewOrderForTable(table.id);
+      return;
+    }
+
+    setSelectedOrderId(table.activeOrderId);
+    setActiveServerView(table.status === 'payment' ? 'billing' : 'orders');
+  };
+
+  const addItemForTable = (table) => {
+    setServerOrder((currentOrder) => ({ ...currentOrder, table: table.id }));
+    setActiveServerView('menu');
+  };
+
+  const replaceOrderInState = (nextOrder) => {
+    setOrders((currentOrders) => {
+      const nextOrders = currentOrders.map((order) => (order.id === nextOrder.id ? nextOrder : order));
+      saveStoredOrders(nextOrders);
+      return nextOrders;
+    });
+  };
+
+  const confirmOrder = async (orderId) => {
+    const order = orders.find((item) => item.id === orderId);
+
+    if (order && isBackendOrder(order)) {
+      try {
+        replaceOrderInState(
+          await updateApiOrderStatus(
+            order,
+            'Confirmee par le serveur',
+            serverComments[orderId] || '',
+          ),
+        );
+        return;
+      } catch (error) {
+        console.warn('Backend indisponible, confirmation locale.', error);
+      }
+    }
+
+    const nextOrders = updateStoredOrder(orderId, {
+      status: 'Confirmee par le serveur',
+      serverComment: serverComments[orderId] || '',
+    });
+    setOrders(nextOrders);
+  };
+
+  const cancelOrder = async (orderId) => {
+    const order = orders.find((item) => item.id === orderId);
+
+    if (order && isBackendOrder(order)) {
+      try {
+        replaceOrderInState(
+          await updateApiOrderStatus(order, 'Annulee par le serveur', serverComments[orderId] || ''),
+        );
+        return;
+      } catch (error) {
+        console.warn('Backend indisponible, annulation locale.', error);
+      }
+    }
+
+    const nextOrders = updateStoredOrder(orderId, {
+      status: 'Annulee par le serveur',
+      serverComment: serverComments[orderId] || '',
+    });
+    setOrders(nextOrders);
+  };
+
+  const serveOrder = async (orderId) => {
+    const order = orders.find((item) => item.id === orderId);
+
+    if (order && isBackendOrder(order)) {
+      try {
+        replaceOrderInState(await updateApiOrderStatus(order, 'Servie', serverComments[orderId] || ''));
+        return;
+      } catch (error) {
+        console.warn('Backend indisponible, service local.', error);
+      }
+    }
+
+    const nextOrders = updateStoredOrder(orderId, {
+      status: 'Servie',
+      serverComment: serverComments[orderId] || '',
+    });
+    setOrders(nextOrders);
+  };
+
+  const editPendingOrderItem = (order, product, quantityChange) => {
+    const existingItem = order.items.find((item) => item.id === product.id);
+
+    const nextItems =
+      existingItem || quantityChange < 0
+        ? order.items
+            .map((item) =>
+              item.id === product.id ? { ...item, quantity: item.quantity + quantityChange } : item,
+            )
+            .filter((item) => item.quantity > 0)
+        : [...order.items, { ...product, quantity: 1 }];
+
+    const nextTotal = nextItems.reduce((sum, item) => sum + item.price * item.quantity, 0);
+    const nextPoints = nextItems.reduce((sum, item) => sum + item.points * item.quantity, 0);
+
+    const nextOrders = updateStoredOrder(order.id, {
+      items: nextItems,
+      total: nextTotal,
+      points: nextPoints,
+      serverComment: serverComments[order.id] || 'Commande ajustee par le serveur',
+    });
+
+    setOrders(nextOrders);
+  };
+
+  const updateServerOrderItem = (product, quantityChange) => {
+    setServerOrder((currentOrder) => {
+      const existingItem = currentOrder.items.find((item) => item.id === product.id);
+
+      if (!existingItem && quantityChange > 0) {
+        return {
+          ...currentOrder,
+          items: [...currentOrder.items, { ...product, quantity: 1 }],
+        };
+      }
+
+      const nextItems = currentOrder.items
+        .map((item) =>
+          item.id === product.id ? { ...item, quantity: item.quantity + quantityChange } : item,
+        )
+        .filter((item) => item.quantity > 0);
+
+      return { ...currentOrder, items: nextItems };
+    });
+  };
+
+  const serverOrderTotal = serverOrder.items.reduce(
+    (sum, item) => sum + item.price * item.quantity,
+    0,
+  );
+  const serverOrderPoints = serverOrder.items.reduce(
+    (sum, item) => sum + item.points * item.quantity,
+    0,
+  );
+  const canSubmitServerOrder = Boolean(serverOrder.table && serverOrder.items.length > 0);
+
+  const printOrderBill = async (order) => {
+    if (!order?.items?.length || Number(order.total || 0) <= 0) return;
+    const paymentMethod = paymentMethods[order.id] || 'Especes';
+
+    if (isBackendOrder(order)) {
+      try {
+        const request = await createApiBillRequest(order);
+        const printedRequest = await printApiBillRequest(request, paymentMethod);
+        if (printedRequest.order) {
+          replaceOrderInState(printedRequest.order);
+        }
+        setBillRequests((currentRequests) => {
+          const nextRequests = [
+            printedRequest,
+            ...currentRequests.filter((item) => item.id !== printedRequest.id),
+          ];
+          saveBillRequests(nextRequests);
+          return nextRequests;
+        });
+      } catch (error) {
+        console.warn('Backend indisponible, impression locale.', error);
+      }
+    }
+
+    const bill = {
+      id: `BILL-${order.id}`,
+      orderId: order.id,
+      table: order.table,
+      items: order.items,
+      total: order.total,
+      clientName: order.clientName,
+      comment: order.comment,
+      createdAt: order.createdAt,
+      paymentMethod,
+      status: 'Ticket imprime',
+    };
+
+    setActiveTicket(bill);
+    markQrSessionBillRequested(bill.table);
+    const nextOrders = updateStoredOrder(order.id, {
+      status: 'Payee',
+    });
+    setOrders(nextOrders);
+    window.setTimeout(() => window.print(), 100);
+  };
+
+  const isPrimaryActionDisabled = (order) => {
+    if (!order) return true;
+
+    const stage = getOrderStage(order);
+    if (stage === 'payment') {
+      return !paymentMethods[order.id] || !order.items?.length || Number(order.total || 0) <= 0;
+    }
+
+    return ['kitchen', 'paid', 'cancelled', 'unknown'].includes(stage);
+  };
+
+  const runPrimaryOrderAction = (order) => {
+    if (!order || isPrimaryActionDisabled(order)) return;
+
+    const stage = getOrderStage(order);
+
+    if (stage === 'validate') {
+      confirmOrder(order.id);
+      return;
+    }
+
+    if (stage === 'pickup') {
+      serveOrder(order.id);
+      return;
+    }
+
+    if (stage === 'payment') {
+      const billRequest = findBillRequestForOrder(order);
+      if (billRequest) {
+        printBill(billRequest);
+        return;
+      }
+      printOrderBill(order);
+    }
+  };
+
+  const submitServerOrder = async () => {
+    if (!serverOrder.table || serverOrder.items.length === 0) return;
+
+    const createdAt = new Date().toISOString();
+
+    const order = {
+      id: `SRV-${createdAt.replaceAll(/[-:.TZ]/g, '')}`,
+      table: serverOrder.table,
+      clientName: serverOrder.clientName || 'Client accompagne',
+      accessMode: 'server-assisted',
+      comment: serverOrder.comment,
+      serverComment: 'Commande prise par le serveur',
+      total: serverOrderTotal,
+      points: serverOrderPoints,
+      items: serverOrder.items,
+      status: 'Confirmee par le serveur',
+      createdAt,
+      updatedAt: createdAt,
+    };
+
+    try {
+      const apiOrder = await createApiOrder(order);
+      setOrders(addStoredOrder(apiOrder));
+    } catch (error) {
+      console.warn('Backend indisponible, commande serveur gardee en localStorage.', error);
+      setOrders(addStoredOrder(order));
+    }
+
+    setServerOrder(createEmptyServerOrder());
+  };
+
+  const loginServer = async (event) => {
+    event.preventDefault();
+    if (!credentials.phone || !credentials.password) {
+      setServerAuthError('Telephone et mot de passe obligatoires.');
+      return;
+    }
+
+    setServerAuthLoading(true);
+    setServerAuthError('');
+
+    try {
+      const auth = await loginApi({
+        phone: credentials.phone.trim(),
+        password: credentials.password,
+      });
+
+      if (auth.role !== 'WAITER') {
+        setServerAuthError('Ce compte n est pas un compte serveur.');
+        return;
+      }
+
+      sessionStorage.setItem(SERVER_AUTH_KEY, 'true');
+      sessionStorage.setItem('pos2-server-auth', JSON.stringify(auth));
+      setIsAuthenticated(true);
+    } catch (error) {
+      setServerAuthError(error.message || 'Connexion serveur impossible.');
+    } finally {
+      setServerAuthLoading(false);
+    }
+  };
+
+  const useDemoAccount = () => {
+    setCredentials({ phone: '0600000000', password: '1234' });
+    setServerAuthError('');
+  };
+
+  const recoverServerPassword = async () => {
+    if (!credentials.phone) {
+      setServerAuthError('Entrez le telephone du serveur.');
+      return;
+    }
+
+    setServerAuthLoading(true);
+    setServerAuthError('');
+
+    try {
+      const response = await forgotPasswordApi({ phone: credentials.phone.trim() });
+      setServerAuthMessage(response.message || 'Code envoye : 1234');
+      setServerAuthMode('reset');
+    } catch (error) {
+      setServerAuthError(error.message || 'Impossible de recuperer le mot de passe.');
+    } finally {
+      setServerAuthLoading(false);
+    }
+  };
+
+  const resetServerPassword = async () => {
+    if (!credentials.phone || !serverOtp || !serverNewPassword) {
+      setServerAuthError('Telephone, OTP et nouveau mot de passe obligatoires.');
+      return;
+    }
+
+    setServerAuthLoading(true);
+    setServerAuthError('');
+
+    try {
+      await resetPasswordApi({
+        phone: credentials.phone.trim(),
+        otp: serverOtp,
+        newPassword: serverNewPassword,
+      });
+      setCredentials((current) => ({ ...current, password: serverNewPassword }));
+      setServerOtp('');
+      setServerNewPassword('');
+      setServerAuthMode('login');
+      setServerAuthMessage('Mot de passe modifie. Connectez-vous maintenant.');
+    } catch (error) {
+      setServerAuthError(error.message || 'Impossible de modifier le mot de passe.');
+    } finally {
+      setServerAuthLoading(false);
+    }
+  };
+
+  const logoutServer = () => {
+    sessionStorage.removeItem(SERVER_AUTH_KEY);
+    sessionStorage.removeItem('pos2-server-auth');
+    setIsAuthenticated(false);
+  };
+
+  const handleServerNavPointer = (event) => {
+    const navButton = event.target.closest('button[data-server-view]');
+
+    if (navButton?.dataset.serverView) {
+      setActiveServerView(navButton.dataset.serverView);
+    }
+  };
+
+  const printBill = async (request) => {
+    const bill = buildBillFromRequest(request);
+    const paymentMethod = paymentMethods[bill.orderId] || 'Especes';
+
+    if (!bill.items?.length || Number(bill.total || 0) <= 0) {
+      const nextRequests = updateBillRequest(request.id, {
+        status: 'Addition incomplete',
+        serverNote: 'Aucune commande active trouvee pour cette table.',
+      });
+      setBillRequests(nextRequests);
+      return;
+    }
+
+    if (request.backendId) {
+      try {
+        const printedRequest = await printApiBillRequest(request, paymentMethod);
+        if (printedRequest.order) {
+          replaceOrderInState(printedRequest.order);
+        }
+        setBillRequests((currentRequests) => {
+          const nextRequests = currentRequests.map((item) =>
+            item.id === printedRequest.id ? printedRequest : item,
+          );
+          saveBillRequests(nextRequests);
+          return nextRequests;
+        });
+      } catch (error) {
+        console.warn('Backend indisponible, impression locale.', error);
+      }
+    }
+
+    setActiveTicket({ ...bill, paymentMethod });
+    markQrSessionBillRequested(bill.table);
+    const nextRequests = updateBillRequest(bill.id, {
+      orderId: bill.orderId,
+      items: bill.items,
+      total: bill.total,
+      status: 'Ticket imprime',
+      printedAt: new Date().toISOString(),
+    });
+    const nextOrders = updateStoredOrder(bill.orderId, {
+      status: 'Payee',
+    });
+    setOrders(nextOrders);
+    setBillRequests(nextRequests);
+    window.setTimeout(() => window.print(), 100);
+  };
+
+  if (!isAuthenticated) {
+    return (
+      <main className="server-page">
+        <section className="server-login-panel">
+          <div>
+            <p className="eyebrow">Acces personnel</p>
+            <h1>{serverAuthMode === 'login' ? 'Connexion serveur' : 'Recuperer le mot de passe'}</h1>
+            <p>
+              L'interface serveur est reservee au personnel. Connectez-vous avec telephone et mot
+              de passe.
+            </p>
+            <p className="server-demo-hint">Compte demo : 0600000000 / 1234</p>
+          </div>
+
+          <form className="server-login-form" onSubmit={loginServer}>
+            <label className="field">
+              Telephone
+              <input
+                onChange={(event) =>
+                  setCredentials((current) => ({ ...current, phone: event.target.value }))
+                }
+                placeholder="Ex: 0600000000"
+                type="tel"
+                value={credentials.phone}
+              />
+            </label>
+
+            {serverAuthMode === 'login' && (
+              <>
+                <label className="field">
+                  Mot de passe
+                  <input
+                    onChange={(event) =>
+                      setCredentials((current) => ({ ...current, password: event.target.value }))
+                    }
+                    placeholder="Mot de passe serveur"
+                    type="password"
+                    value={credentials.password}
+                  />
+                </label>
+                <button className="primary-button" disabled={serverAuthLoading} type="submit">
+                  Se connecter
+                </button>
+                <button
+                  className="auth-text-button"
+                  type="button"
+                  onClick={() => {
+                    setServerAuthMode('forgot');
+                    setServerAuthError('');
+                  }}
+                >
+                  Mot de passe oublie ?
+                </button>
+                <button className="secondary-link demo-login-button" type="button" onClick={useDemoAccount}>
+                  Utiliser compte demo
+                </button>
+              </>
+            )}
+
+            {serverAuthMode === 'forgot' && (
+              <>
+                <button
+                  className="primary-button"
+                  disabled={serverAuthLoading}
+                  type="button"
+                  onClick={recoverServerPassword}
+                >
+                  Recuperer le code OTP
+                </button>
+                <button className="auth-text-button" type="button" onClick={() => setServerAuthMode('login')}>
+                  Retour connexion
+                </button>
+              </>
+            )}
+
+            {serverAuthMode === 'reset' && (
+              <>
+                <label className="field">
+                  Code OTP
+                  <input
+                    onChange={(event) => setServerOtp(event.target.value)}
+                    placeholder="1234"
+                    type="text"
+                    value={serverOtp}
+                  />
+                </label>
+                <label className="field">
+                  Nouveau mot de passe
+                  <input
+                    onChange={(event) => setServerNewPassword(event.target.value)}
+                    placeholder="Nouveau mot de passe"
+                    type="password"
+                    value={serverNewPassword}
+                  />
+                </label>
+                <button
+                  className="primary-button"
+                  disabled={serverAuthLoading}
+                  type="button"
+                  onClick={resetServerPassword}
+                >
+                  Modifier le mot de passe
+                </button>
+              </>
+            )}
+
+            {serverAuthMessage && <p className="auth-message">{serverAuthMessage}</p>}
+            {serverAuthError && <p className="auth-error">{serverAuthError}</p>}
+          </form>
+        </section>
+      </main>
+    );
+  }
+
+  return (
+    <main className="server-page server-tablet-page">
+      <div className="server-tablet-shell">
+        <aside className="server-sidebar">
+          <div className="server-brand">
+            <span>P2</span>
+            <div>
+              <strong>POS2</strong>
+              <small>Station</small>
+            </div>
+          </div>
+          <nav
+            className="server-nav"
+            aria-label="Navigation serveur"
+            onPointerDownCapture={handleServerNavPointer}
+          >
+            <button
+              className={activeServerView === 'orders' ? 'is-active' : ''}
+              data-server-view="orders"
+              type="button"
+              onFocus={() => setActiveServerView('orders')}
+              onClick={() => setActiveServerView('orders')}
+            >
+              <span>01</span>
+              <b>File des commandes</b>
+            </button>
+            <button
+              className={activeServerView === 'floor' ? 'is-active' : ''}
+              data-server-view="floor"
+              type="button"
+              onFocus={() => setActiveServerView('floor')}
+              onClick={() => setActiveServerView('floor')}
+            >
+              <span>02</span>
+              <b>Tables</b>
+            </button>
+            <button
+              className={activeServerView === 'menu' ? 'is-active' : ''}
+              data-server-view="menu"
+              type="button"
+              onFocus={() => setActiveServerView('menu')}
+              onClick={() => setActiveServerView('menu')}
+            >
+              <span>03</span>
+              <b>Nouvelle commande</b>
+            </button>
+            <button
+              className={activeServerView === 'billing' ? 'is-active' : ''}
+              data-server-view="billing"
+              type="button"
+              onFocus={() => setActiveServerView('billing')}
+              onClick={() => setActiveServerView('billing')}
+            >
+              <span>04</span>
+              <b>Paiement / Additions</b>
+            </button>
+            <button
+              className={activeServerView === 'history' ? 'is-active' : ''}
+              data-server-view="history"
+              type="button"
+              onFocus={() => setActiveServerView('history')}
+              onClick={() => setActiveServerView('history')}
+            >
+              <span>05</span>
+              <b>Historique</b>
+            </button>
+          </nav>
+          <div className="server-sidebar-spacer" />
+          <div className="server-session-note">Session serveur active</div>
+        </aside>
+
+        <section className="server-app-shell">
+          <header className="server-topbar">
+            <div className="server-search" aria-label="Recherche">
+              <span className="search-icon">Q</span>
+              <span>Rechercher menu, commandes et tables</span>
+            </div>
+            <div className="server-profile">
+              <span className="notification-dot" aria-hidden="true" />
+              <span className="server-avatar">SP</span>
+              <div>
+                <strong>Serveur POS2</strong>
+                <small>Tablette service</small>
+              </div>
+              <button className="server-logout-link" type="button" onClick={logoutServer}>
+                Quitter
+              </button>
+            </div>
+          </header>
+
+          <div
+            className={`server-workspace ${
+              activeServerView === 'floor' ? 'server-workspace-tables' : ''
+            } ${showSelectedOrderPanel ? '' : 'server-workspace-single'}`}
+          >
+            <section className="server-main-panel">
+              {activeServerView === 'floor' && (
+                <section className="server-dashboard-section server-table-map-section">
+                  <div className="server-section-title">
+                    <div>
+                      <h1>Tables</h1>
+                      <p>Selection rapide d'une table et action directe selon son statut.</p>
+                    </div>
+                    <div className="server-filter-pills server-table-filters" aria-label="Filtres tables">
+                      {[
+                        ['all', 'Toutes', tableOverview.length],
+                        [
+                          'available',
+                          'Libres',
+                          tableOverview.filter((table) => table.status === 'available').length,
+                        ],
+                        [
+                          'dine',
+                          'En service',
+                          tableOverview.filter((table) => table.status === 'dine').length,
+                        ],
+                        [
+                          'payment',
+                          'Addition',
+                          tableOverview.filter((table) => table.status === 'payment').length,
+                        ],
+                      ].map(([filter, label, count]) => (
+                        <button
+                          className={tableFilter === filter ? 'is-active' : ''}
+                          key={filter}
+                          type="button"
+                          onClick={() => setTableFilter(filter)}
+                        >
+                          {label} <strong>{count}</strong>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="server-table-service-grid">
+                    {filteredTables.map((table) => (
+                      <article
+                        className={`server-service-table-card ${table.status}`}
+                        key={table.id}
+                        onClick={() => selectTableOrder(table)}
+                      >
+                        <header>
+                          <div>
+                            <span>Table</span>
+                            <strong>{table.id}</strong>
+                          </div>
+                          <span className={`status-badge status-table-${table.status}`}>
+                            {table.label}
+                          </span>
+                        </header>
+                        <div className="server-table-card-metrics">
+                          <div>
+                            <span>Articles actifs</span>
+                            <strong>{table.guests}</strong>
+                          </div>
+                          <div>
+                            <span>Total</span>
+                            <strong>{formatPrice(table.total)}</strong>
+                          </div>
+                        </div>
+                        <div className="server-table-card-actions">
+                          {table.status === 'available' && (
+                            <button
+                              className="btn btn-primary"
+                              type="button"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                openNewOrderForTable(table.id);
+                              }}
+                            >
+                              Nouvelle commande
+                            </button>
+                          )}
+                          {table.status === 'dine' && (
+                            <>
+                              <button
+                                className="btn btn-secondary"
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  selectTableOrder(table);
+                                }}
+                              >
+                                Voir commande
+                              </button>
+                              <button
+                                className="btn btn-primary"
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  addItemForTable(table);
+                                }}
+                              >
+                                Ajouter article
+                              </button>
+                            </>
+                          )}
+                          {table.status === 'payment' && (
+                            <button
+                              className="btn btn-primary"
+                              type="button"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                selectTableOrder(table);
+                              }}
+                            >
+                              Encaisser
+                            </button>
+                          )}
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {activeServerView === 'orders' && (
+                <section className="server-dashboard-section server-order-line-section" id="order-line">
+                  <div className="server-section-title">
+                    <div>
+                      <h1>File des commandes</h1>
+                      <p>Chaque colonne indique clairement la prochaine action du serveur.</p>
+                    </div>
+                    <div className="server-filter-pills server-kpi-pills">
+                      <span>
+                        Actives <strong>{activeServiceOrders.length}</strong>
+                      </span>
+                      <span>
+                        A valider <strong>{pendingOrders.length}</strong>
+                      </span>
+                      <span>
+                        En cuisine <strong>{confirmedOrders.length}</strong>
+                      </span>
+                      <span>
+                        Pretes <strong>{pickupOrders.length}</strong>
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="server-flow-strip" aria-label="Flux commande">
+                    <span>Client</span>
+                    <strong>A valider</strong>
+                    <strong>En cuisine</strong>
+                    <strong>Pretes</strong>
+                    <span>Servir</span>
+                  </div>
+
+                  <div className="server-status-board">
+                    {orderStatusColumns.map((column) => (
+                      <section className="server-status-column" key={column.id}>
+                        <header className="server-status-column-header">
+                          <div>
+                            <span>{column.description}</span>
+                            <h2>{column.title}</h2>
+                          </div>
+                          <strong>{column.orders.length}</strong>
+                        </header>
+
+                        <div className="server-status-column-list">
+                          {column.orders.length === 0 && (
+                            <p className="empty-state">Aucune commande ici.</p>
+                          )}
+                          {column.orders.map((order) => (
+                            <ServerOrderCard
+                              key={order.id}
+                              order={order}
+                              selected={selectedOrder?.id === order.id}
+                              primaryDisabled={isPrimaryActionDisabled(order)}
+                              onPrimary={() => runPrimaryOrderAction(order)}
+                              onReject={() => cancelOrder(order.id)}
+                              onSelect={() => setSelectedOrderId(order.id)}
+                            />
+                          ))}
+                        </div>
+                      </section>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {activeServerView === 'billing' && (
+                <section className="server-dashboard-section server-billing-section" id="payment">
+                  <div className="server-section-title">
+                    <div>
+                      <h1>Paiement / Additions</h1>
+                      <p>Demandes d'addition recues en temps reel et commandes a encaisser.</p>
+                    </div>
+                    <div className="server-filter-pills server-kpi-pills">
+                      <span>
+                        Demandes <strong>{paymentOrdersWithBillRequestCount}</strong>
+                      </span>
+                      <span>
+                        A encaisser <strong>{paymentOrders.length}</strong>
+                      </span>
+                      <span>
+                        Payees <strong>{paidOrders.length}</strong>
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="server-bill-request-grid">
+                    {paymentOrders.length === 0 && (
+                      <div className="server-empty-state-card">
+                        <span aria-hidden="true">MAD</span>
+                        <h2>Aucune commande a encaisser</h2>
+                        <p>Les commandes confirmees ou servies apparaitront ici.</p>
+                      </div>
+                    )}
+                    {paymentOrdersWithBillInfo.map(({ order, billRequest }) => {
+                      const orderCanBePaid = isServedOrder(order);
+                      const orderWaitsValidation = isPendingValidationOrder(order);
+                      const selectedPaymentMethod = paymentMethods[order.id] || 'Especes';
+                      const actionLabel = orderCanBePaid
+                        ? 'Encaisser'
+                        : orderWaitsValidation
+                          ? 'En attente serveur'
+                          : 'Marquer servie';
+
+                      return (
+                      <article
+                        className={`server-bill-request-card ${
+                          selectedOrder?.id === order.id ? 'is-selected' : ''
+                        }`}
+                        key={`payment-${order.id}`}
+                        onClick={() => setSelectedOrderId(order.id)}
+                      >
+                        <div className="server-bill-request-top">
+                          <div>
+                            <span>Table</span>
+                            <strong>{order.table}</strong>
+                          </div>
+                          <span
+                            className={`status-badge ${
+                              billRequest ? 'status-paid' : 'status-payment'
+                            }`}
+                          >
+                            {billRequest
+                              ? "Client demande l'addition"
+                              : orderCanBePaid
+                                ? 'A encaisser'
+                                : 'Commande confirmee'}
+                          </span>
+                        </div>
+                        <p>{order.id}</p>
+                        <ul>
+                          {order.items.slice(0, 3).map((item) => (
+                            <li key={`served-${order.id}-${item.id}-${item.name}`}>
+                              <span>
+                                {item.quantity}x {item.name}
+                              </span>
+                              <strong>{formatPrice(item.price * item.quantity)}</strong>
+                            </li>
+                          ))}
+                          {order.items.length > 3 && (
+                            <li>
+                              <span>+{order.items.length - 3} autre(s)</span>
+                              <strong />
+                            </li>
+                          )}
+                        </ul>
+                        <div className="server-card-total-line">
+                          <span>Total</span>
+                          <strong>{formatPrice(order.total)}</strong>
+                        </div>
+                        {orderCanBePaid && (
+                          <div className="server-payment-method-choice server-card-payment-methods">
+                            {['Especes', 'Carte', 'Digital'].map((method) => (
+                              <button
+                                className={selectedPaymentMethod === method ? 'is-active' : ''}
+                                key={`${order.id}-${method}`}
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setPaymentMethods((current) => ({
+                                    ...current,
+                                    [order.id]: method,
+                                  }));
+                                }}
+                              >
+                                {method}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                        <button
+                          className="btn btn-primary"
+                          disabled={
+                            orderWaitsValidation ||
+                            (orderCanBePaid &&
+                              (!selectedPaymentMethod ||
+                                !order.items?.length ||
+                                Number(order.total || 0) <= 0))
+                          }
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            if (orderWaitsValidation) return;
+                            if (orderCanBePaid) {
+                              runPrimaryOrderAction(order);
+                              return;
+                            }
+                            serveOrder(order.id);
+                          }}
+                        >
+                          {actionLabel}
+                        </button>
+                        {orderCanBePaid && isPrimaryActionDisabled(order) && (
+                          <small className="server-disabled-help">
+                            Choisissez un mode de paiement pour encaisser.
+                          </small>
+                        )}
+                        {orderWaitsValidation && (
+                          <small className="server-disabled-help">
+                            Le serveur doit d'abord valider cette commande.
+                          </small>
+                        )}
+                        {!orderCanBePaid && !orderWaitsValidation && (
+                          <small className="server-disabled-help">
+                            Commande active. Marquez-la servie pour passer a l'encaissement.
+                          </small>
+                        )}
+                      </article>
+                      );
+                    })}
+                  </div>
+                </section>
+              )}
+
+              {activeServerView === 'menu' && (
+                <section className="server-dashboard-section server-menu-section" id="manual-order">
+                  <div className="server-section-title">
+                    <div>
+                      <h2>Menu serveur</h2>
+                      <p>Commande prise par le serveur pour un client accompagne.</p>
+                    </div>
+                  </div>
+
+                  <div className="server-form-grid server-manual-fields">
+                    <label className="field">
+                      Table
+                      <input
+                        onChange={(event) =>
+                          setServerOrder((currentOrder) => ({
+                            ...currentOrder,
+                            table: event.target.value,
+                          }))
+                        }
+                        placeholder="Ex: 4"
+                        type="number"
+                        value={serverOrder.table}
+                      />
+                    </label>
+
+                    <label className="field">
+                      Nom client
+                      <input
+                        onChange={(event) =>
+                          setServerOrder((currentOrder) => ({
+                            ...currentOrder,
+                            clientName: event.target.value,
+                          }))
+                        }
+                        type="text"
+                        value={serverOrder.clientName}
+                      />
+                    </label>
+
+                    <label className="field server-comment-field">
+                      Commentaire sur l'ordre
+                      <textarea
+                        onChange={(event) =>
+                          setServerOrder((currentOrder) => ({
+                            ...currentOrder,
+                            comment: event.target.value,
+                          }))
+                        }
+                        placeholder="Ex: allergie, cuisson, demande speciale..."
+                        value={serverOrder.comment}
+                      />
+                    </label>
+                  </div>
+
+                  <div className="server-category-row">
+                    {serverCategories.map((category) => (
+                      <button
+                        className={activeServerCategory === category ? 'is-active' : ''}
+                        key={category}
+                        type="button"
+                        onClick={() => setActiveServerCategory(category)}
+                      >
+                        {category}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="server-food-grid">
+                    {filteredServerProducts.map((product) => {
+                      const quantity = getServerItemQuantity(product.id);
+
+                      return (
+                        <article className="server-food-card" key={product.id}>
+                          <div
+                            className="server-food-image"
+                            style={{ backgroundImage: `url(${product.image})` }}
+                          />
+                          <div className="server-food-body">
+                            <small>{product.category}</small>
+                            <strong>{product.name}</strong>
+                            <span>{formatPrice(product.price)}</span>
+                          </div>
+                          <div className="quantity-actions">
+                            <button
+                              disabled={quantity === 0}
+                              type="button"
+                              onClick={() => updateServerOrderItem(product, -1)}
+                            >
+                              -
+                            </button>
+                            <span>{quantity}</span>
+                            <button type="button" onClick={() => updateServerOrderItem(product, 1)}>
+                              +
+                            </button>
+                          </div>
+                        </article>
+                      );
+                    })}
+                  </div>
+
+                  <div className="server-manual-summary">
+                    <div>
+                      <span>Commande serveur</span>
+                      <strong>
+                        {serverOrder.table
+                          ? `Table ${serverOrder.table}`
+                          : 'Aucune table selectionnee'}
+                      </strong>
+                      <small>
+                        {serverOrder.items.length} article(s) - {formatPrice(serverOrderTotal)} -{' '}
+                        {serverOrderPoints} point(s)
+                      </small>
+                      {!canSubmitServerOrder && (
+                        <small className="server-disabled-help">
+                          Selectionnez une table et ajoutez au moins un article.
+                        </small>
+                      )}
+                    </div>
+                    <button
+                      className="btn btn-primary"
+                      disabled={!canSubmitServerOrder}
+                      type="button"
+                      onClick={submitServerOrder}
+                    >
+                      Valider commande
+                    </button>
+                  </div>
+                </section>
+              )}
+
+              {activeServerView === 'history' && (
+                <section className="server-dashboard-section" id="history">
+                  <div className="server-section-title">
+                    <div>
+                      <h2>Historique rapide</h2>
+                      <p>Commandes confirmees, annulees ou payees pendant le service.</p>
+                    </div>
+                  </div>
+
+                  <div className="server-history-toolbar">
+                    <div className="server-filter-pills server-history-filters">
+                      {[
+                        ['all', 'Toutes'],
+                        ['confirmed', 'Confirmees'],
+                        ['paid', 'Payees'],
+                        ['cancelled', 'Annulees'],
+                      ].map(([filter, label]) => (
+                        <button
+                          className={historyFilter === filter ? 'is-active' : ''}
+                          key={filter}
+                          type="button"
+                          onClick={() => setHistoryFilter(filter)}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                    <label className="server-history-search">
+                      Recherche
+                      <input
+                        onChange={(event) => setHistorySearch(event.target.value)}
+                        placeholder="Table ou numero de commande"
+                        type="search"
+                        value={historySearch}
+                      />
+                    </label>
+                  </div>
+
+                  <div className="history-list server-history-grid">
+                    {filteredHistoryOrders.length === 0 && (
+                      <p className="empty-state">Aucune commande trouvee.</p>
+                    )}
+                    {filteredHistoryOrders.map((order) => (
+                      <HistoryOrderCard
+                        key={order.id}
+                        order={order}
+                        selected={selectedOrder?.id === order.id}
+                        onSelect={() => setSelectedOrderId(order.id)}
+                      />
+                    ))}
+                  </div>
+                </section>
+              )}
+            </section>
+
+            {showSelectedOrderPanel && (
+              <aside className="server-payment-panel" id="billing">
+                <SelectedOrderPanel
+                  order={selectedOrder}
+                  billRequest={selectedBillRequest}
+                  primaryDisabled={isPrimaryActionDisabled(selectedOrder)}
+                  onEditItem={editPendingOrderItem}
+                  onPrimary={() => runPrimaryOrderAction(selectedOrder)}
+                  onReject={() => selectedOrder && cancelOrder(selectedOrder.id)}
+                  onPaymentMethodChange={(orderId, method) =>
+                    setPaymentMethods((current) => ({
+                      ...current,
+                      [orderId]: method,
+                    }))
+                  }
+                  onServerCommentChange={(orderId, value) =>
+                    setServerComments((current) => ({
+                      ...current,
+                      [orderId]: value,
+                    }))
+                  }
+                  paymentMethod={selectedOrder ? paymentMethods[selectedOrder.id] || '' : ''}
+                  serverComments={serverComments}
+                />
+              </aside>
+            )}
+          </div>
+        </section>
+      </div>
+
+      {activeTicket && (
+        <section className="print-ticket" aria-label="Ticket addition">
+          <div className="ticket-brand">
+            <span>POS2</span>
+            <h2>Restaurant</h2>
+            <p>Ticket d'addition</p>
+          </div>
+
+          <div className="ticket-meta">
+            <div>
+              <span>Table</span>
+              <strong>{activeTicket.table}</strong>
+            </div>
+            <div>
+              <span>Commande</span>
+              <strong>{activeTicket.orderId}</strong>
+            </div>
+            <div>
+              <span>Date</span>
+              <strong>{formatTicketDate(activeTicket.createdAt)}</strong>
+            </div>
+          </div>
+
+          <div className="ticket-divider" />
+          {(activeTicket.items || []).map((item) => (
+            <div className="ticket-row" key={`ticket-${activeTicket.orderId}-${item.id}`}>
+              <div>
+                <strong>{item.name}</strong>
+                <span>
+                  {item.quantity} x {formatPrice(item.price)}
+                </span>
+              </div>
+              <strong>{formatPrice(item.price * item.quantity)}</strong>
+            </div>
+          ))}
+          <div className="ticket-divider" />
+          <div className="ticket-row ticket-total">
+            <span>Total</span>
+            <strong>{formatPrice(activeTicket.total)}</strong>
+          </div>
+          <div className="ticket-row">
+            <span>Mode paiement</span>
+            <strong>{activeTicket.paymentMethod || 'Especes'}</strong>
+          </div>
+          {activeTicket.comment && (
+            <p className="ticket-note">Note client : {activeTicket.comment}</p>
+          )}
+          <p className="ticket-footer">Merci pour votre visite.</p>
+        </section>
+      )}
+    </main>
+  );
+}
+
+function ServerOrderCard({
+  order,
+  selected,
+  primaryDisabled,
+  onPrimary,
+  onReject,
+  onSelect,
+}) {
+  const stage = getOrderStage(order);
+  const visibleItems = order.items.slice(0, 3);
+
+  return (
+    <article
+      className={`server-compact-order-card status-card-${stage} ${
+        selected ? 'is-selected' : ''
+      }`}
+      onClick={onSelect}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') onSelect();
+      }}
+      tabIndex={0}
+    >
+      <header className="server-compact-card-header">
+        <div>
+          <span>Table</span>
+          <strong>{order.table}</strong>
+        </div>
+        <span className={`status-badge status-${stage}`}>{getStatusLabel(order.status)}</span>
+      </header>
+
+      <p className="server-order-id">{order.id}</p>
+
+      <ul className="server-compact-items">
+        {visibleItems.map((item) => (
+          <li key={`${order.id}-${item.id}`}>
+            <span>
+              {item.quantity}x {item.name}
+            </span>
+          </li>
+        ))}
+        {order.items.length > visibleItems.length && (
+          <li>
+            <span>+{order.items.length - visibleItems.length} autre(s)</span>
+          </li>
+        )}
+      </ul>
+
+      <div className="server-card-total-line">
+        <span>Total</span>
+        <strong>{formatPrice(order.total)}</strong>
+      </div>
+
+      <div className="server-card-actions">
+        {stage === 'kitchen' ? (
+          <div className="server-kitchen-state">
+            <span className="status-badge status-kitchen">En cuisine</span>
+            <p>En preparation cote cuisine.</p>
+          </div>
+        ) : (
+          <button
+            className={`btn ${stage === 'validate' ? 'btn-success' : 'btn-primary'}`}
+            disabled={primaryDisabled}
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onPrimary();
+            }}
+          >
+            {stage === 'pickup' ? 'Servir la table' : getPrimaryActionLabel(order)}
+          </button>
+        )}
+        {stage === 'validate' && (
+          <button
+            className="btn btn-danger"
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onReject();
+            }}
+          >
+            Refuser
+          </button>
+        )}
+      </div>
+    </article>
+  );
+}
+
+function SelectedOrderPanel({
+  order,
+  billRequest,
+  primaryDisabled,
+  onEditItem,
+  onPrimary,
+  onReject,
+  onPaymentMethodChange,
+  onServerCommentChange,
+  paymentMethod,
+  serverComments,
+}) {
+  if (!order) {
+    return (
+      <section className="server-payment-card server-selected-order-card">
+        <div className="server-empty-panel">
+          <span>Selection</span>
+          <h2>Aucune commande</h2>
+          <p>Choisis une commande dans la file pour afficher ses details ici.</p>
+        </div>
+      </section>
+    );
+  }
+
+  const stage = getOrderStage(order);
+  const billReady = isServedOrder(order);
+  const orderedProductIds = new Set(order.items.map((item) => item.id));
+  const productsToAdd = menuProducts.filter((product) => !orderedProductIds.has(product.id));
+
+  return (
+    <section className="server-payment-card server-selected-order-card">
+      <header className="server-selected-heading">
+        <div>
+          <span>Commande selectionnee</span>
+          <h2>Table {order.table}</h2>
+          <p>{order.id}</p>
+        </div>
+        <span className={`status-badge status-${stage}`}>{getStatusLabel(order.status)}</span>
+      </header>
+
+      <div className="server-panel-section">
+        <h3>Articles</h3>
+        <div className="server-payment-items">
+          {order.items.map((item) => (
+            <div className="payment-item-row" key={`selected-${order.id}-${item.id}`}>
+              <div>
+                <strong>{item.name}</strong>
+                <span>
+                  {item.quantity} x {formatPrice(item.price)}
+                </span>
+              </div>
+              <strong>{formatPrice(item.price * item.quantity)}</strong>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {stage === 'validate' && (
+        <details className="server-panel-edit-card">
+          <summary>
+            <span>Modifier avant confirmation</span>
+            <small>Verifier a table puis ajuster la commande.</small>
+          </summary>
+
+          <div className="server-edit-section">
+            <strong className="server-edit-title">Articles dans la commande</strong>
+            <div className="server-edit-current-list">
+              {order.items.map((item) => {
+                const product = menuProducts.find((menuProduct) => menuProduct.id === item.id) || item;
+
+                return (
+                  <div className="server-edit-current-row" key={`edit-current-${order.id}-${item.id}`}>
+                    <div>
+                      <strong>{item.name}</strong>
+                      <span>
+                        {item.quantity} x {formatPrice(item.price)}
+                      </span>
+                    </div>
+                    <div className="quantity-actions server-edit-quantity">
+                      <button
+                        aria-label={`Retirer ${item.name}`}
+                        disabled={item.quantity === 0}
+                        type="button"
+                        onClick={() => onEditItem(order, product, -1)}
+                      >
+                        -
+                      </button>
+                      <span>{item.quantity}</span>
+                      <button
+                        aria-label={`Ajouter ${item.name}`}
+                        type="button"
+                        onClick={() => onEditItem(order, product, 1)}
+                      >
+                        +
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {productsToAdd.length > 0 && (
+            <div className="server-edit-section">
+              <strong className="server-edit-title">Ajouter un article</strong>
+              <div className="server-edit-add-list">
+                {productsToAdd.map((product) => (
+                  <div className="server-edit-add-row" key={`edit-add-${order.id}-${product.id}`}>
+                    <div>
+                      <strong>{product.name}</strong>
+                      <span>
+                        {formatPrice(product.price)} - {product.points} pts
+                      </span>
+                    </div>
+                    <button
+                      className="btn btn-secondary server-edit-add-button"
+                      type="button"
+                      onClick={() => onEditItem(order, product, 1)}
+                    >
+                      Ajouter
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </details>
+      )}
+
+      <label className="field server-panel-comment">
+        Commentaire serveur
+        <textarea
+          onChange={(event) => onServerCommentChange(order.id, event.target.value)}
+          placeholder="Ex: client confirme sans oignon, remplacer jus..."
+          value={serverComments[order.id] || ''}
+        />
+      </label>
+
+      <div className="payment-summary server-panel-summary">
+        <div>
+          <span>Total</span>
+          <strong>{formatPrice(order.total)}</strong>
+        </div>
+        <div>
+          <span>Mode paiement</span>
+          <strong>{paymentMethod || (billReady ? 'A choisir' : 'A definir')}</strong>
+        </div>
+      </div>
+
+      {stage === 'payment' && (
+        <div className="server-payment-method-choice" aria-label="Mode de paiement">
+          {['Especes', 'Carte', 'Digital'].map((method) => (
+            <button
+              className={paymentMethod === method ? 'is-active' : ''}
+              key={method}
+              type="button"
+              onClick={() => onPaymentMethodChange(order.id, method)}
+            >
+              {method}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {stage === 'kitchen' && (
+        <p className="server-card-note">
+          Commande en preparation. Aucune action serveur pour le moment.
+        </p>
+      )}
+
+      {stage === 'payment' && primaryDisabled && (
+        <p className="server-disabled-help">Choisissez un mode de paiement pour encaisser.</p>
+      )}
+
+      <div className="server-payment-actions selected-panel-actions">
+        {stage !== 'kitchen' && (
+          <button
+            className={`btn ${stage === 'validate' ? 'btn-success' : 'btn-primary'}`}
+            disabled={primaryDisabled}
+            type="button"
+            onClick={onPrimary}
+          >
+            {getPrimaryActionLabel(order)}
+          </button>
+        )}
+        {stage === 'validate' && (
+          <button className="btn btn-danger" type="button" onClick={onReject}>
+            Refuser
+          </button>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function HistoryOrderCard({ order, selected, onSelect }) {
+  const stage = getOrderStage(order);
+  const statusClass =
+    order.status === 'Payee'
+      ? 'history-paid'
+      : order.status === 'Annulee par le serveur'
+        ? 'history-cancelled'
+        : stage === 'kitchen'
+          ? 'history-kitchen'
+          : 'history-confirmed';
+
+  return (
+    <article
+      className={`history-card server-history-card ${selected ? 'is-selected' : ''}`}
+      onClick={onSelect}
+    >
+      <header className="server-history-card-header">
+        <div>
+          <span>Table</span>
+          <strong>{order.table}</strong>
+        </div>
+        <span className={`history-status-badge ${statusClass}`}>
+          {getStatusLabel(order.status)}
+        </span>
+      </header>
+
+      <div className="server-history-meta">
+        <span>{order.id}</span>
+        <span>{formatTicketDate(order.updatedAt || order.createdAt)}</span>
+      </div>
+
+      <ul className="server-history-items">
+        {order.items.map((item) => (
+          <li key={`history-${order.id}-${item.id}`}>
+            <span>
+              {item.quantity}x {item.name}
+            </span>
+            <strong>{formatPrice(item.price * item.quantity)}</strong>
+          </li>
+        ))}
+      </ul>
+
+      <div className="server-card-total-line">
+        <span>Total</span>
+        <strong>{formatPrice(order.total)}</strong>
+      </div>
+    </article>
+  );
+}
+
+export default ServerPage;
