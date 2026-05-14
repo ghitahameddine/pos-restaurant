@@ -7,5 +7,8 @@ import java.util.List;
 
 public interface KitchenItemRepository extends JpaRepository<KitchenItem, Long> {
     List<KitchenItem> findByStationOrderByCreatedAtAsc(String station);
-}
 
+    List<KitchenItem> findByOrder_IdOrderByCreatedAtAsc(Long orderId);
+
+    List<KitchenItem> findByOrder_IdAndStationOrderByCreatedAtAsc(Long orderId, String station);
+}

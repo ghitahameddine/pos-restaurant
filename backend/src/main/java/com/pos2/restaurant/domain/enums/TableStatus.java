@@ -3,6 +3,7 @@ package com.pos2.restaurant.domain.enums;
 public enum TableStatus {
     AVAILABLE,
     IN_SERVICE,
-    BILL_REQUESTED
+    BILL_REQUESTED,
+    PAID_STILL_SEATED,
+    CLEANING
 }
-

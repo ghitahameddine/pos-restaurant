@@ -7,10 +7,16 @@ public record TableResponse(
         Long id,
         Integer number,
         TableStatus status,
-        boolean active
+        boolean active,
+        String qrUrl
 ) {
     public static TableResponse fromEntity(RestaurantTable table) {
-        return new TableResponse(table.getId(), table.getNumber(), table.getStatus(), table.isActive());
+        return new TableResponse(
+                table.getId(),
+                table.getNumber(),
+                table.getStatus(),
+                table.isActive(),
+                table.getQrUrl()
+        );
     }
 }
-

@@ -22,11 +22,14 @@ public class RestaurantTable {
     private Integer number;
 
     @Enumerated(EnumType.STRING)
-    @Column(nullable = false)
+    @Column(nullable = false, length = 32)
     private TableStatus status = TableStatus.AVAILABLE;
 
     @Column(nullable = false)
     private boolean active = true;
+
+    @Column(length = 800)
+    private String qrUrl;
 
     protected RestaurantTable() {
     }
@@ -43,6 +46,10 @@ public class RestaurantTable {
         return number;
     }
 
+    public void setNumber(Integer number) {
+        this.number = number;
+    }
+
     public TableStatus getStatus() {
         return status;
     }
@@ -54,5 +61,16 @@ public class RestaurantTable {
     public boolean isActive() {
         return active;
     }
-}
 
+    public void setActive(boolean active) {
+        this.active = active;
+    }
+
+    public String getQrUrl() {
+        return qrUrl;
+    }
+
+    public void setQrUrl(String qrUrl) {
+        this.qrUrl = qrUrl;
+    }
+}

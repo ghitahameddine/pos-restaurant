@@ -5,6 +5,7 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import jakarta.persistence.Lob;
 import jakarta.persistence.Table;
 
 import java.math.BigDecimal;
@@ -38,7 +39,8 @@ public class MenuItem {
     @Column(length = 800)
     private String details;
 
-    @Column(length = 800)
+    @Lob
+    @Column(columnDefinition = "LONGTEXT")
     private String imageUrl;
 
     @Column(nullable = false)
@@ -66,36 +68,71 @@ public class MenuItem {
         return name;
     }
 
+    public void setName(String name) {
+        this.name = name;
+    }
+
     public String getCategory() {
         return category;
+    }
+
+    public void setCategory(String category) {
+        this.category = category;
     }
 
     public BigDecimal getPrice() {
         return price;
     }
 
+    public void setPrice(BigDecimal price) {
+        this.price = price;
+    }
+
     public int getPoints() {
         return points;
+    }
+
+    public void setPoints(int points) {
+        this.points = points;
     }
 
     public String getStation() {
         return station;
     }
 
+    public void setStation(String station) {
+        this.station = station;
+    }
+
     public String getDescription() {
         return description;
+    }
+
+    public void setDescription(String description) {
+        this.description = description;
     }
 
     public String getDetails() {
         return details;
     }
 
+    public void setDetails(String details) {
+        this.details = details;
+    }
+
     public String getImageUrl() {
         return imageUrl;
+    }
+
+    public void setImageUrl(String imageUrl) {
+        this.imageUrl = imageUrl;
     }
 
     public boolean isAvailable() {
         return available;
     }
-}
 
+    public void setAvailable(boolean available) {
+        this.available = available;
+    }
+}

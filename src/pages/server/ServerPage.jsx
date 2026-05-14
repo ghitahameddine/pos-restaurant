@@ -19,16 +19,40 @@ import {
   createApiOrder,
   fetchApiBillRequests,
   fetchApiOrders,
+  fetchApiSlots,
+  fetchApiTables,
   forgotPasswordApi,
   isBackendOrder,
   loginApi,
+  markApiTableAvailable,
   printApiBillRequest,
+  releaseApiTable,
   resetPasswordApi,
   subscribeRealtime,
   updateApiOrderStatus,
 } from '../../utils/api';
 
 const SERVER_AUTH_KEY = 'pos2-server-authenticated';
+const SERVER_AUTH_STORAGE_KEY = 'pos2-server-auth';
+
+function getStoredServerAuth() {
+  const rawAuth = sessionStorage.getItem(SERVER_AUTH_STORAGE_KEY);
+  if (!rawAuth) return null;
+
+  try {
+    return JSON.parse(rawAuth);
+  } catch {
+    return null;
+  }
+}
+
+function parseAssignedTables(assignedTables) {
+  if (!assignedTables) return [];
+  return String(assignedTables)
+    .split(',')
+    .map((tableNumber) => tableNumber.trim())
+    .filter(Boolean);
+}
 
 function formatTicketDate(dateValue) {
   const date = dateValue ? new Date(dateValue) : new Date();
@@ -59,6 +83,26 @@ function getStatusLabel(status) {
   };
 
   return labels[status] || status;
+}
+
+function getOrderSubtotal(order) {
+  return Number(order?.subtotal || order?.total || 0);
+}
+
+function getOrderDiscountAmount(order) {
+  if (!order?.reward || order.reward.type !== 'DISCOUNT') {
+    return 0;
+  }
+
+  if (typeof order.discountAmount === 'number') {
+    return Number(order.discountAmount || 0);
+  }
+
+  return Math.max(0, Math.round((getOrderSubtotal(order) - Number(order.total || 0)) * 100) / 100);
+}
+
+function isRewardFreeItem(item) {
+  return Boolean(item?.isRewardItem) || (Number(item?.price || 0) === 0 && Number(item?.quantity || 0) > 0);
 }
 
 function isReadyForPickup(order) {
@@ -118,12 +162,7 @@ function isConfirmedOrder(order) {
 }
 
 function isBillableOrder(order) {
-  return (
-    Boolean(order?.items?.length) &&
-    !isPendingValidationOrder(order) &&
-    !isCancelledOrder(order) &&
-    !isPaidOrder(order)
-  );
+  return Boolean(order?.items?.length) && isServedOrder(order) && !isPaidOrder(order);
 }
 
 function getOrderStage(order) {
@@ -151,16 +190,85 @@ function getPrimaryActionLabel(order) {
   return 'Aucune action';
 }
 
+function getSelectedPaymentMethod(paymentMethods, order) {
+  if (!order) return '';
+  return paymentMethods[order.id] || 'Especes';
+}
+
+function getPickupSlotInfo(order, slots) {
+  if (!order?.backendId) return null;
+  return slots.find((slot) => Number(slot.currentOrderId) === Number(order.backendId)) || null;
+}
+
+function normalizeSlotAccent(color) {
+  const value = String(color || '').trim();
+  if (/^#[0-9a-f]{6}$/i.test(value)) {
+    return value;
+  }
+
+  const normalized = value.toLowerCase();
+  if (normalized.includes('rouge')) return '#bb4639';
+  if (normalized.includes('vert')) return '#207f5c';
+  if (normalized.includes('bleu')) return '#23545b';
+  if (normalized.includes('jaune') || normalized.includes('gold') || normalized.includes('dor')) return '#b89039';
+  return '#b89039';
+}
+
+function getReadySinceLabel(dateValue, nowTick) {
+  if (!dateValue) {
+    return 'Prete tout juste';
+  }
+
+  const readyDate = new Date(dateValue);
+  const diffMinutes = Math.max(0, Math.floor((nowTick - readyDate.getTime()) / 60000));
+
+  if (diffMinutes <= 0) {
+    return 'Prete maintenant';
+  }
+
+  if (diffMinutes === 1) {
+    return 'Prete depuis 1 min';
+  }
+
+  return `Prete depuis ${diffMinutes} min`;
+}
+
+function mapTableStatusToUi(status, hasActiveOrder, hasPaidOrder) {
+  const normalized = String(status || '')
+    .trim()
+    .toUpperCase();
+
+  if (hasActiveOrder) return 'in_service';
+  if (normalized === 'PAID_STILL_SEATED') return 'paid_still_seated';
+  if (normalized === 'CLEANING') return 'cleaning';
+  if (normalized === 'IN_SERVICE' || normalized === 'BILL_REQUESTED') return 'in_service';
+  if (normalized === 'AVAILABLE') return 'available';
+
+  // Fallback only for old/local table data without backend status.
+  if (hasPaidOrder) return 'paid_still_seated';
+  return 'available';
+}
+
+function getTableStatusLabel(tableStatus) {
+  if (tableStatus === 'available') return 'Libre';
+  if (tableStatus === 'in_service') return 'Occupee';
+  if (tableStatus === 'paid_still_seated') return 'Payee - client assis';
+  if (tableStatus === 'cleaning') return 'A nettoyer';
+  return 'Statut inconnu';
+}
+
 function ServerPage() {
   const [isAuthenticated, setIsAuthenticated] = useState(
     () => sessionStorage.getItem(SERVER_AUTH_KEY) === 'true',
   );
+  const [serverAuth, setServerAuth] = useState(() => getStoredServerAuth());
   const [credentials, setCredentials] = useState({ phone: '0600000000', password: '' });
   const [serverAuthMode, setServerAuthMode] = useState('login');
   const [serverOtp, setServerOtp] = useState('');
   const [serverNewPassword, setServerNewPassword] = useState('');
   const [serverAuthMessage, setServerAuthMessage] = useState('');
   const [serverAuthError, setServerAuthError] = useState('');
+  const [serverActionError, setServerActionError] = useState('');
   const [serverAuthLoading, setServerAuthLoading] = useState(false);
   const [orders, setOrders] = useState(() => dedupeOrders(getStoredOrders()));
   const [billRequests, setBillRequests] = useState(() => getBillRequests());
@@ -171,18 +279,28 @@ function ServerPage() {
   const [selectedOrderId, setSelectedOrderId] = useState(null);
   const [tableFilter, setTableFilter] = useState('all');
   const [historyFilter, setHistoryFilter] = useState('all');
+  const [historySearchType, setHistorySearchType] = useState('table');
   const [historySearch, setHistorySearch] = useState('');
   const [paymentMethods, setPaymentMethods] = useState({});
   const [activeServerCategory, setActiveServerCategory] = useState('Tous');
+  const [counterSlots, setCounterSlots] = useState([]);
+  const [apiTables, setApiTables] = useState([]);
+  const [nowTick, setNowTick] = useState(() => Date.now());
 
   useEffect(() => {
     let cancelled = false;
+    let refreshInProgress = false;
+    let realtimeRefreshId = null;
 
     const refreshServerData = async () => {
+      if (refreshInProgress) return;
+      refreshInProgress = true;
       try {
-        const [apiOrders, apiBillRequests] = await Promise.all([
+        const [apiOrders, apiBillRequests, apiCounterSlots, nextApiTables] = await Promise.all([
           fetchApiOrders(),
           fetchApiBillRequests(),
+          fetchApiSlots('COUNTER'),
+          fetchApiTables(),
         ]);
 
         if (cancelled) return;
@@ -192,15 +310,27 @@ function ServerPage() {
         saveBillRequests(apiBillRequests);
         setOrders(cleanApiOrders);
         setBillRequests(apiBillRequests);
+        setCounterSlots(Array.isArray(apiCounterSlots) ? apiCounterSlots : []);
+        setApiTables(Array.isArray(nextApiTables) ? nextApiTables : []);
       } catch (error) {
         if (cancelled) return;
         setOrders(dedupeOrders(getStoredOrders()));
         setBillRequests(getBillRequests());
+      } finally {
+        refreshInProgress = false;
       }
     };
 
+    const scheduleServerRefresh = () => {
+      if (realtimeRefreshId) {
+        window.clearTimeout(realtimeRefreshId);
+      }
+
+      realtimeRefreshId = window.setTimeout(refreshServerData, 250);
+    };
+
     refreshServerData();
-    const intervalId = window.setInterval(refreshServerData, 15000);
+    const intervalId = window.setInterval(refreshServerData, 30000);
     const unsubscribeRealtime = subscribeRealtime({
       onOrder: (nextOrder) => {
         setOrders((currentOrders) => {
@@ -220,6 +350,13 @@ function ServerPage() {
           saveStoredOrders(nextOrders);
           return nextOrders;
         });
+        fetchApiSlots('COUNTER')
+          .then((nextSlots) => setCounterSlots(Array.isArray(nextSlots) ? nextSlots : []))
+          .catch(() => {});
+        fetchApiTables()
+          .then((nextTables) => setApiTables(Array.isArray(nextTables) ? nextTables : []))
+          .catch(() => {});
+        scheduleServerRefresh();
       },
       onBillRequest: (nextBillRequest) => {
         setBillRequests((currentRequests) => {
@@ -232,20 +369,46 @@ function ServerPage() {
           saveBillRequests(nextRequests);
           return nextRequests;
         });
+        fetchApiTables()
+          .then((nextTables) => setApiTables(Array.isArray(nextTables) ? nextTables : []))
+          .catch(() => {});
+        scheduleServerRefresh();
+      },
+      onTable: () => {
+        fetchApiTables()
+          .then((nextTables) => setApiTables(Array.isArray(nextTables) ? nextTables : []))
+          .catch(() => {});
+        scheduleServerRefresh();
       },
       onError: () => {
         // Le refresh de secours prend le relais si le canal temps reel tombe.
       },
     });
 
+    const tickId = window.setInterval(() => setNowTick(Date.now()), 60000);
+
     return () => {
       cancelled = true;
+      if (realtimeRefreshId) {
+        window.clearTimeout(realtimeRefreshId);
+      }
       window.clearInterval(intervalId);
+      window.clearInterval(tickId);
       unsubscribeRealtime();
     };
   }, []);
 
-  const visibleOrders = useMemo(() => dedupeOrders(orders), [orders]);
+  const assignedTableNumbers = useMemo(
+    () => parseAssignedTables(serverAuth?.assignedTables),
+    [serverAuth],
+  );
+  const visibleOrders = useMemo(() => {
+    const cleanOrders = dedupeOrders(orders);
+    if (assignedTableNumbers.length === 0) {
+      return cleanOrders;
+    }
+    return cleanOrders.filter((order) => assignedTableNumbers.includes(String(order.table)));
+  }, [assignedTableNumbers, orders]);
 
   const pendingOrders = useMemo(
     () => visibleOrders.filter((order) => order.status === 'En attente de validation serveur'),
@@ -301,11 +464,14 @@ function ServerPage() {
 
   const paymentOrders = useMemo(() => {
     const orderMap = new Map();
-    [...billableOrders, ...billRequestOrders].forEach((order) => {
+    [...servedOrders, ...billRequestOrders].forEach((order) => {
+      if (isCancelledOrder(order) || isPaidOrder(order) || isPendingValidationOrder(order)) {
+        return;
+      }
       orderMap.set(order.backendId ? `backend-${order.backendId}` : order.id, order);
     });
     return Array.from(orderMap.values());
-  }, [billRequestOrders, billableOrders]);
+  }, [billRequestOrders, servedOrders]);
 
   const paymentOrdersWithBillInfo = useMemo(
     () =>
@@ -350,14 +516,8 @@ function ServerPage() {
         description: 'Commandes confirmees en preparation.',
         orders: confirmedOrders,
       },
-      {
-        id: 'pickup',
-        title: 'Pretes',
-        description: 'Plateaux a recuperer au comptoir.',
-        orders: pickupOrders,
-      },
     ],
-    [confirmedOrders, pendingOrders, pickupOrders],
+    [confirmedOrders, pendingOrders],
   );
   const serverCategories = useMemo(
     () => ['Tous', ...new Set(menuProducts.map((product) => product.category))],
@@ -371,43 +531,70 @@ function ServerPage() {
     return menuProducts.filter((product) => product.category === activeServerCategory);
   }, [activeServerCategory]);
 
-  const tableOverview = useMemo(
-    () =>
-      Array.from({ length: 10 }, (_, index) => {
-        const tableNumber = String(index + 1);
-        const tableOrders = orders.filter(
-          (order) =>
-            String(order.table) === tableNumber &&
-            !['Annulee par le serveur', 'Payee'].includes(order.status),
-        );
-        const hasBillRequest = pendingBillRequests.some(
-          (request) => String(request.table) === tableNumber,
-        );
-        const activeOrder = tableOrders[0];
-        const itemsCount = tableOrders.reduce(
-          (sum, order) =>
-            sum +
-            (order.items || []).reduce(
-              (itemSum, item) => itemSum + Number(item.quantity || 0),
-              0,
-            ),
-          0,
-        );
-        const total = tableOrders.reduce((sum, order) => sum + Number(order.total || 0), 0);
-        const hasServedOrder = tableOrders.some(isServedOrder);
-        const status = hasBillRequest || hasServedOrder ? 'payment' : activeOrder ? 'dine' : 'available';
+  const tableOverview = useMemo(() => {
+    const sourceTables =
+      Array.isArray(apiTables) && apiTables.length > 0
+        ? [...apiTables]
+            .filter((table) => table?.active !== false)
+            .filter(
+              (table) =>
+                assignedTableNumbers.length === 0 ||
+                assignedTableNumbers.includes(String(table.number || table.id)),
+            )
+            .sort((left, right) => Number(left.number || 0) - Number(right.number || 0))
+        : Array.from({ length: 10 }, (_, index) => ({
+            id: index + 1,
+            number: index + 1,
+            status: null,
+            active: true,
+          })).filter(
+            (table) =>
+              assignedTableNumbers.length === 0 ||
+              assignedTableNumbers.includes(String(table.number)),
+          );
 
-        return {
-          id: tableNumber,
-          status,
-          label: status === 'payment' ? 'Addition' : status === 'dine' ? 'En service' : 'Libre',
-          guests: itemsCount,
-          total,
-          activeOrderId: activeOrder?.id || null,
-        };
-      }),
-    [visibleOrders, pendingBillRequests],
-  );
+    return sourceTables.map((table) => {
+      const tableNumber = String(table.number || table.id);
+      const tableOrders = visibleOrders
+        .filter((order) => String(order.table) === tableNumber)
+        .sort(
+          (left, right) =>
+            new Date(right.updatedAt || right.createdAt || 0).getTime() -
+            new Date(left.updatedAt || left.createdAt || 0).getTime(),
+        );
+      const activeOrders = tableOrders.filter((order) => !isCancelledOrder(order) && !isPaidOrder(order));
+      const paidOrders = tableOrders.filter((order) => isPaidOrder(order));
+      const hasBillRequest = pendingBillRequests.some((request) => String(request.table) === tableNumber);
+      const activeOrder = activeOrders[0] || null;
+      const status = mapTableStatusToUi(table.status, activeOrders.length > 0, paidOrders.length > 0);
+      const referenceOrders =
+        status === 'in_service'
+          ? activeOrders
+          : ['paid_still_seated', 'cleaning'].includes(status)
+            ? paidOrders.slice(0, 1)
+            : [];
+      const itemsCount = referenceOrders.reduce(
+        (sum, order) =>
+          sum +
+          (order.items || []).reduce((itemSum, item) => itemSum + Number(item.quantity || 0), 0),
+        0,
+      );
+      const total = referenceOrders.reduce((sum, order) => sum + Number(order.total || 0), 0);
+
+      return {
+        id: tableNumber,
+        number: tableNumber,
+        backendId: table.id || null,
+        status,
+        label: getTableStatusLabel(status),
+        hasBillRequest,
+        guests: itemsCount,
+        total,
+        totalLabel: status === 'paid_still_seated' ? 'Total paye' : 'Total',
+        activeOrderId: activeOrder?.id || paidOrders[0]?.id || null,
+      };
+    });
+  }, [apiTables, assignedTableNumbers, pendingBillRequests, visibleOrders]);
 
   const filteredTables = useMemo(() => {
     if (tableFilter === 'all') return tableOverview;
@@ -425,14 +612,42 @@ function ServerPage() {
         (historyFilter === 'paid' && order.status === 'Payee') ||
         (historyFilter === 'cancelled' && order.status === 'Annulee par le serveur') ||
         (historyFilter === 'kitchen' && stage === 'kitchen');
-      const matchesSearch =
-        normalizedSearch.length === 0 ||
-        String(order.table).toLowerCase().includes(normalizedSearch) ||
-        String(order.id).toLowerCase().includes(normalizedSearch);
+      const matchesItems = (order.items || []).some((item) =>
+        `${item.name} ${item.quantity} ${item.price}`.toLowerCase().includes(normalizedSearch),
+      );
+      let matchesSearch = normalizedSearch.length === 0;
+
+      if (!matchesSearch) {
+        if (historySearchType === 'table') {
+          matchesSearch = String(order.table).toLowerCase().includes(normalizedSearch);
+        } else if (historySearchType === 'order') {
+          matchesSearch = String(order.id).toLowerCase().includes(normalizedSearch);
+        }
+      }
 
       return matchesFilter && matchesSearch;
     });
-  }, [handledOrders, historyFilter, historySearch]);
+  }, [handledOrders, historyFilter, historySearch, historySearchType]);
+
+  const reprintHistoryBill = (order) => {
+    if (!order?.items?.length || !isPaidOrder(order)) return;
+
+    setActiveTicket({
+      id: `REPRINT-${order.id}`,
+      orderId: order.id,
+      table: order.table,
+      items: order.items,
+      subtotal: order.subtotal,
+      total: order.total,
+      comment: order.comment,
+      reward: order.reward,
+      rewardNote: order.rewardNote,
+      discountAmount: getOrderDiscountAmount(order),
+      createdAt: order.updatedAt || order.createdAt,
+      paymentMethod: order.paymentMethod || 'Especes',
+    });
+    window.setTimeout(() => window.print(), 100);
+  };
 
   const getServerItemQuantity = (productId) =>
     serverOrder.items.find((item) => item.id === productId)?.quantity || 0;
@@ -458,9 +673,13 @@ function ServerPage() {
         ...request,
         orderId: billOrder.id,
         items: billOrder.items || [],
+        subtotal: billOrder.subtotal || billOrder.total || 0,
         total: billOrder.total || 0,
         clientName: billOrder.clientName || request.clientName,
         comment: billOrder.comment || request.comment,
+        reward: billOrder.reward || null,
+        rewardNote: billOrder.rewardNote || '',
+        discountAmount: getOrderDiscountAmount(billOrder),
         createdAt: billOrder.createdAt || request.createdAt,
       };
     }
@@ -473,7 +692,11 @@ function ServerPage() {
       ...request,
       orderId: request.orderId || 'Commande introuvable',
       items: [],
+      subtotal: request.subtotal || 0,
       total: 0,
+      reward: request.reward || null,
+      rewardNote: request.rewardNote || '',
+      discountAmount: request.discountAmount || 0,
     };
   };
 
@@ -504,13 +727,27 @@ function ServerPage() {
   const selectableOrders = useMemo(() => {
     if (activeServerView === 'history') return handledOrders;
     if (activeServerView === 'billing') return billingSelectableOrders;
+    if (activeServerView === 'ready') return pickupOrders;
     return activeServiceOrders;
-  }, [activeServerView, activeServiceOrders, billingSelectableOrders, handledOrders]);
+  }, [activeServerView, activeServiceOrders, billingSelectableOrders, handledOrders, pickupOrders]);
 
-  const selectedOrder =
-    selectableOrders.find((order) => order.id === selectedOrderId) || selectableOrders[0] || null;
+  const selectedOrder = selectedOrderId
+    ? selectableOrders.find((order) => order.id === selectedOrderId) || null
+    : null;
   const selectedBillRequest = findBillRequestForOrder(selectedOrder);
-  const showSelectedOrderPanel = activeServerView === 'orders';
+  const showSelectedOrderPanel = activeServerView === 'orders' || activeServerView === 'ready';
+
+  useEffect(() => {
+    if ((activeServerView !== 'orders' && activeServerView !== 'ready') || !selectedOrderId) {
+      return;
+    }
+
+    const sourceOrders = activeServerView === 'ready' ? pickupOrders : activeServiceOrders;
+    const currentSelectedOrder = sourceOrders.find((order) => order.id === selectedOrderId);
+    if (!currentSelectedOrder || (activeServerView === 'orders' && getOrderStage(currentSelectedOrder) === 'kitchen')) {
+      setSelectedOrderId(null);
+    }
+  }, [activeServiceOrders, activeServerView, pickupOrders, selectedOrderId]);
 
   const openNewOrderForTable = (tableId) => {
     setServerOrder((currentOrder) => ({ ...currentOrder, table: tableId }));
@@ -518,18 +755,79 @@ function ServerPage() {
   };
 
   const selectTableOrder = (table) => {
-    if (!table.activeOrderId) {
+    if (table.status === 'available') {
       openNewOrderForTable(table.id);
       return;
     }
 
+    if (table.status !== 'in_service' || !table.activeOrderId) {
+      return;
+    }
+
     setSelectedOrderId(table.activeOrderId);
-    setActiveServerView(table.status === 'payment' ? 'billing' : 'orders');
+    setActiveServerView('orders');
   };
 
   const addItemForTable = (table) => {
     setServerOrder((currentOrder) => ({ ...currentOrder, table: table.id }));
     setActiveServerView('menu');
+  };
+
+  const syncOneTableInState = (nextTable) => {
+    if (!nextTable?.number) return;
+
+    setApiTables((currentTables) => {
+      if (!Array.isArray(currentTables) || currentTables.length === 0) {
+        return currentTables;
+      }
+
+      return currentTables.map((table) =>
+        Number(table.number) === Number(nextTable.number) ? nextTable : table,
+      );
+    });
+  };
+
+  const refreshTablesSilently = async () => {
+    try {
+      const nextTables = await fetchApiTables();
+      setApiTables(Array.isArray(nextTables) ? nextTables : []);
+    } catch (error) {
+      console.warn('Actualisation des tables impossible pour le moment.', error);
+    }
+  };
+
+  const refreshOrdersAndTablesSilently = async () => {
+    try {
+      const [nextOrders, nextTables] = await Promise.all([fetchApiOrders(), fetchApiTables()]);
+      const cleanOrders = dedupeOrders(nextOrders);
+      saveStoredOrders(cleanOrders);
+      setOrders(cleanOrders);
+      setApiTables(Array.isArray(nextTables) ? nextTables : []);
+    } catch (error) {
+      console.warn('Actualisation commandes/tables impossible pour le moment.', error);
+    }
+  };
+
+  const releaseTable = async (tableNumber) => {
+    try {
+      setServerActionError('');
+      syncOneTableInState(await releaseApiTable(Number(tableNumber)));
+      await refreshTablesSilently();
+    } catch (error) {
+      setServerActionError(error.message || "Impossible de changer l'etat de la table.");
+      console.warn("Impossible de passer la table en nettoyage pour l'instant.", error);
+    }
+  };
+
+  const markTableAvailable = async (tableNumber) => {
+    try {
+      setServerActionError('');
+      syncOneTableInState(await markApiTableAvailable(Number(tableNumber)));
+      await refreshTablesSilently();
+    } catch (error) {
+      setServerActionError(error.message || "Impossible de marquer la table libre.");
+      console.warn("Impossible de liberer la table pour l'instant.", error);
+    }
   };
 
   const replaceOrderInState = (nextOrder) => {
@@ -542,6 +840,7 @@ function ServerPage() {
 
   const confirmOrder = async (orderId) => {
     const order = orders.find((item) => item.id === orderId);
+    setServerActionError('');
 
     if (order && isBackendOrder(order)) {
       try {
@@ -554,7 +853,8 @@ function ServerPage() {
         );
         return;
       } catch (error) {
-        console.warn('Backend indisponible, confirmation locale.', error);
+        setServerActionError(error.message || "Impossible de confirmer: backend indisponible.");
+        return;
       }
     }
 
@@ -567,6 +867,7 @@ function ServerPage() {
 
   const cancelOrder = async (orderId) => {
     const order = orders.find((item) => item.id === orderId);
+    setServerActionError('');
 
     if (order && isBackendOrder(order)) {
       try {
@@ -575,7 +876,8 @@ function ServerPage() {
         );
         return;
       } catch (error) {
-        console.warn('Backend indisponible, annulation locale.', error);
+        setServerActionError(error.message || "Impossible d'annuler: backend indisponible.");
+        return;
       }
     }
 
@@ -588,13 +890,15 @@ function ServerPage() {
 
   const serveOrder = async (orderId) => {
     const order = orders.find((item) => item.id === orderId);
+    setServerActionError('');
 
     if (order && isBackendOrder(order)) {
       try {
         replaceOrderInState(await updateApiOrderStatus(order, 'Servie', serverComments[orderId] || ''));
         return;
       } catch (error) {
-        console.warn('Backend indisponible, service local.', error);
+        setServerActionError(error.message || "Impossible de servir: backend indisponible.");
+        return;
       }
     }
 
@@ -606,22 +910,35 @@ function ServerPage() {
   };
 
   const editPendingOrderItem = (order, product, quantityChange) => {
-    const existingItem = order.items.find((item) => item.id === product.id);
+    const editableItems = order.items.filter((item) => !item.isRewardItem);
+    const rewardItems = order.items.filter((item) => item.isRewardItem);
+    const existingItem = editableItems.find((item) => item.id === product.id);
 
-    const nextItems =
+    const nextEditableItems =
       existingItem || quantityChange < 0
-        ? order.items
+        ? editableItems
             .map((item) =>
               item.id === product.id ? { ...item, quantity: item.quantity + quantityChange } : item,
             )
             .filter((item) => item.quantity > 0)
-        : [...order.items, { ...product, quantity: 1 }];
+        : [...editableItems, { ...product, quantity: 1 }];
 
-    const nextTotal = nextItems.reduce((sum, item) => sum + item.price * item.quantity, 0);
-    const nextPoints = nextItems.reduce((sum, item) => sum + item.points * item.quantity, 0);
+    const nextItems = [...nextEditableItems, ...rewardItems];
+    const nextSubtotal = nextItems.reduce((sum, item) => sum + item.price * item.quantity, 0);
+    const nextDiscount =
+      order.reward?.type === 'DISCOUNT'
+        ? Math.max(
+            0,
+            Math.round((nextSubtotal * Number(order.reward.discountPercent || 0)) / 100 * 100) / 100,
+          )
+        : 0;
+    const nextTotal = Math.max(0, nextSubtotal - nextDiscount);
+    const nextPoints = Math.floor(nextTotal / 10);
 
     const nextOrders = updateStoredOrder(order.id, {
       items: nextItems,
+      subtotal: nextSubtotal,
+      discountAmount: nextDiscount,
       total: nextTotal,
       points: nextPoints,
       serverComment: serverComments[order.id] || 'Commande ajustee par le serveur',
@@ -672,6 +989,7 @@ function ServerPage() {
         if (printedRequest.order) {
           replaceOrderInState(printedRequest.order);
         }
+        refreshTablesSilently();
         setBillRequests((currentRequests) => {
           const nextRequests = [
             printedRequest,
@@ -690,9 +1008,13 @@ function ServerPage() {
       orderId: order.id,
       table: order.table,
       items: order.items,
+      subtotal: order.subtotal,
       total: order.total,
       clientName: order.clientName,
       comment: order.comment,
+      reward: order.reward,
+      rewardNote: order.rewardNote,
+      discountAmount: getOrderDiscountAmount(order),
       createdAt: order.createdAt,
       paymentMethod,
       status: 'Ticket imprime',
@@ -712,7 +1034,7 @@ function ServerPage() {
 
     const stage = getOrderStage(order);
     if (stage === 'payment') {
-      return !paymentMethods[order.id] || !order.items?.length || Number(order.total || 0) <= 0;
+      return !getSelectedPaymentMethod(paymentMethods, order) || !order.items?.length || Number(order.total || 0) <= 0;
     }
 
     return ['kitchen', 'paid', 'cancelled', 'unknown'].includes(stage);
@@ -796,7 +1118,8 @@ function ServerPage() {
       }
 
       sessionStorage.setItem(SERVER_AUTH_KEY, 'true');
-      sessionStorage.setItem('pos2-server-auth', JSON.stringify(auth));
+      sessionStorage.setItem(SERVER_AUTH_STORAGE_KEY, JSON.stringify(auth));
+      setServerAuth(auth);
       setIsAuthenticated(true);
     } catch (error) {
       setServerAuthError(error.message || 'Connexion serveur impossible.');
@@ -859,7 +1182,8 @@ function ServerPage() {
 
   const logoutServer = () => {
     sessionStorage.removeItem(SERVER_AUTH_KEY);
-    sessionStorage.removeItem('pos2-server-auth');
+    sessionStorage.removeItem(SERVER_AUTH_STORAGE_KEY);
+    setServerAuth(null);
     setIsAuthenticated(false);
   };
 
@@ -890,6 +1214,7 @@ function ServerPage() {
         if (printedRequest.order) {
           replaceOrderInState(printedRequest.order);
         }
+        refreshTablesSilently();
         setBillRequests((currentRequests) => {
           const nextRequests = currentRequests.map((item) =>
             item.id === printedRequest.id ? printedRequest : item,
@@ -1090,13 +1415,23 @@ function ServerPage() {
               <b>Paiement / Additions</b>
             </button>
             <button
+              className={activeServerView === 'ready' ? 'is-active' : ''}
+              data-server-view="ready"
+              type="button"
+              onFocus={() => setActiveServerView('ready')}
+              onClick={() => setActiveServerView('ready')}
+            >
+              <span>05</span>
+              <b>Plats prets</b>
+            </button>
+            <button
               className={activeServerView === 'history' ? 'is-active' : ''}
               data-server-view="history"
               type="button"
               onFocus={() => setActiveServerView('history')}
               onClick={() => setActiveServerView('history')}
             >
-              <span>05</span>
+              <span>06</span>
               <b>Historique</b>
             </button>
           </nav>
@@ -1106,10 +1441,6 @@ function ServerPage() {
 
         <section className="server-app-shell">
           <header className="server-topbar">
-            <div className="server-search" aria-label="Recherche">
-              <span className="search-icon">Q</span>
-              <span>Rechercher menu, commandes et tables</span>
-            </div>
             <div className="server-profile">
               <span className="notification-dot" aria-hidden="true" />
               <span className="server-avatar">SP</span>
@@ -1129,6 +1460,12 @@ function ServerPage() {
             } ${showSelectedOrderPanel ? '' : 'server-workspace-single'}`}
           >
             <section className="server-main-panel">
+              {serverActionError && (
+                <div className="server-action-error" role="alert">
+                  {serverActionError}
+                </div>
+              )}
+
               {activeServerView === 'floor' && (
                 <section className="server-dashboard-section server-table-map-section">
                   <div className="server-section-title">
@@ -1145,14 +1482,19 @@ function ServerPage() {
                           tableOverview.filter((table) => table.status === 'available').length,
                         ],
                         [
-                          'dine',
-                          'En service',
-                          tableOverview.filter((table) => table.status === 'dine').length,
+                          'in_service',
+                          'Occupees',
+                          tableOverview.filter((table) => table.status === 'in_service').length,
                         ],
                         [
-                          'payment',
-                          'Addition',
-                          tableOverview.filter((table) => table.status === 'payment').length,
+                          'paid_still_seated',
+                          'Payees assises',
+                          tableOverview.filter((table) => table.status === 'paid_still_seated').length,
+                        ],
+                        [
+                          'cleaning',
+                          'A nettoyer',
+                          tableOverview.filter((table) => table.status === 'cleaning').length,
                         ],
                       ].map(([filter, label, count]) => (
                         <button
@@ -1189,10 +1531,13 @@ function ServerPage() {
                             <strong>{table.guests}</strong>
                           </div>
                           <div>
-                            <span>Total</span>
+                            <span>{table.totalLabel}</span>
                             <strong>{formatPrice(table.total)}</strong>
                           </div>
                         </div>
+                        {table.hasBillRequest && table.status === 'in_service' && (
+                          <span className="server-table-request-hint">Addition demandee</span>
+                        )}
                         <div className="server-table-card-actions">
                           {table.status === 'available' && (
                             <button
@@ -1206,7 +1551,7 @@ function ServerPage() {
                               Nouvelle commande
                             </button>
                           )}
-                          {table.status === 'dine' && (
+                          {table.status === 'in_service' && (
                             <>
                               <button
                                 className="btn btn-secondary"
@@ -1219,7 +1564,7 @@ function ServerPage() {
                                 Voir commande
                               </button>
                               <button
-                                className="btn btn-primary"
+                                className="btn btn-secondary"
                                 type="button"
                                 onClick={(event) => {
                                   event.stopPropagation();
@@ -1230,16 +1575,28 @@ function ServerPage() {
                               </button>
                             </>
                           )}
-                          {table.status === 'payment' && (
+                          {table.status === 'paid_still_seated' && (
                             <button
                               className="btn btn-primary"
                               type="button"
                               onClick={(event) => {
                                 event.stopPropagation();
-                                selectTableOrder(table);
+                                releaseTable(table.number);
                               }}
                             >
-                              Encaisser
+                              Client parti
+                            </button>
+                          )}
+                          {table.status === 'cleaning' && (
+                            <button
+                              className="btn btn-secondary"
+                              type="button"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                markTableAvailable(table.number);
+                              }}
+                            >
+                              Marquer libre
                             </button>
                           )}
                         </div>
@@ -1266,9 +1623,6 @@ function ServerPage() {
                       <span>
                         En cuisine <strong>{confirmedOrders.length}</strong>
                       </span>
-                      <span>
-                        Pretes <strong>{pickupOrders.length}</strong>
-                      </span>
                     </div>
                   </div>
 
@@ -1276,7 +1630,6 @@ function ServerPage() {
                     <span>Client</span>
                     <strong>A valider</strong>
                     <strong>En cuisine</strong>
-                    <strong>Pretes</strong>
                     <span>Servir</span>
                   </div>
 
@@ -1295,13 +1648,17 @@ function ServerPage() {
                           {column.orders.length === 0 && (
                             <p className="empty-state">Aucune commande ici.</p>
                           )}
-                          {column.orders.map((order) => (
-                            <ServerOrderCard
-                              key={order.id}
-                              order={order}
-                              selected={selectedOrder?.id === order.id}
-                              primaryDisabled={isPrimaryActionDisabled(order)}
-                              onPrimary={() => runPrimaryOrderAction(order)}
+                            {column.orders.map((order) => (
+                              <ServerOrderCard
+                                key={order.id}
+                                order={order}
+                                slotInfo={column.id === 'pickup' ? getPickupSlotInfo(order, counterSlots) : null}
+                                readySinceLabel={
+                                  column.id === 'pickup' ? getReadySinceLabel(order.readySince, nowTick) : ''
+                                }
+                                selected={selectedOrder?.id === order.id}
+                                primaryDisabled={isPrimaryActionDisabled(order)}
+                                onPrimary={() => runPrimaryOrderAction(order)}
                               onReject={() => cancelOrder(order.id)}
                               onSelect={() => setSelectedOrderId(order.id)}
                             />
@@ -1309,6 +1666,51 @@ function ServerPage() {
                         </div>
                       </section>
                     ))}
+                  </div>
+                </section>
+              )}
+
+              {activeServerView === 'ready' && (
+                <section className="server-dashboard-section server-order-line-section" id="ready-orders">
+                  <div className="server-section-title">
+                    <div>
+                      <h1>Plats prets</h1>
+                      <p>Plateaux valides par la cuisine, prets pour le comptoir puis le service.</p>
+                    </div>
+                    <div className="server-filter-pills server-kpi-pills">
+                      <span>
+                        Prets <strong>{pickupOrders.length}</strong>
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="server-status-board server-status-board-single">
+                    <section className="server-status-column">
+                      <header className="server-status-column-header">
+                        <div>
+                          <span>Commande terminee cote cuisine</span>
+                          <h2>Plats prets</h2>
+                        </div>
+                        <strong>{pickupOrders.length}</strong>
+                      </header>
+
+                      <div className="server-status-column-list">
+                        {pickupOrders.length === 0 && <p className="empty-state">Aucun plateau pret pour le moment.</p>}
+                        {pickupOrders.map((order) => (
+                          <ServerOrderCard
+                            key={order.id}
+                            order={order}
+                            slotInfo={getPickupSlotInfo(order, counterSlots)}
+                            readySinceLabel={getReadySinceLabel(order.readySince, nowTick)}
+                            selected={selectedOrder?.id === order.id}
+                            primaryDisabled={isPrimaryActionDisabled(order)}
+                            onPrimary={() => runPrimaryOrderAction(order)}
+                            onReject={() => cancelOrder(order.id)}
+                            onSelect={() => setSelectedOrderId(order.id)}
+                          />
+                        ))}
+                      </div>
+                    </section>
                   </div>
                 </section>
               )}
@@ -1382,8 +1784,9 @@ function ServerPage() {
                             <li key={`served-${order.id}-${item.id}-${item.name}`}>
                               <span>
                                 {item.quantity}x {item.name}
+                                {isRewardFreeItem(item) ? ' - Gratuit' : ''}
                               </span>
-                              <strong>{formatPrice(item.price * item.quantity)}</strong>
+                              <strong>{isRewardFreeItem(item) ? '0 MAD' : formatPrice(item.price * item.quantity)}</strong>
                             </li>
                           ))}
                           {order.items.length > 3 && (
@@ -1393,8 +1796,21 @@ function ServerPage() {
                             </li>
                           )}
                         </ul>
+                        {order.rewardNote && <p className="server-reward-note">{order.rewardNote}</p>}
+                        {getOrderDiscountAmount(order) > 0 && (
+                          <div className="server-card-total-line server-card-total-subline">
+                            <span>Sous-total</span>
+                            <strong>{formatPrice(getOrderSubtotal(order))}</strong>
+                          </div>
+                        )}
+                        {getOrderDiscountAmount(order) > 0 && (
+                          <div className="server-card-total-line server-card-total-discount">
+                            <span>Reduction</span>
+                            <strong>-{formatPrice(getOrderDiscountAmount(order))}</strong>
+                          </div>
+                        )}
                         <div className="server-card-total-line">
-                          <span>Total</span>
+                          <span>Total final</span>
                           <strong>{formatPrice(order.total)}</strong>
                         </div>
                         {orderCanBePaid && (
@@ -1620,9 +2036,20 @@ function ServerPage() {
                     </div>
                     <label className="server-history-search">
                       Recherche
+                      <select
+                        onChange={(event) => setHistorySearchType(event.target.value)}
+                        value={historySearchType}
+                      >
+                        <option value="table">Par numero de table</option>
+                        <option value="order">Par numero de commande</option>
+                      </select>
                       <input
                         onChange={(event) => setHistorySearch(event.target.value)}
-                        placeholder="Table ou numero de commande"
+                        placeholder={
+                          historySearchType === 'order'
+                            ? 'Ex: ORD-2026...'
+                            : 'Ex: 1'
+                        }
                         type="search"
                         value={historySearch}
                       />
@@ -1636,6 +2063,7 @@ function ServerPage() {
                     {filteredHistoryOrders.map((order) => (
                       <HistoryOrderCard
                         key={order.id}
+                        onReprint={() => reprintHistoryBill(order)}
                         order={order}
                         selected={selectedOrder?.id === order.id}
                         onSelect={() => setSelectedOrderId(order.id)}
@@ -1667,7 +2095,7 @@ function ServerPage() {
                       [orderId]: value,
                     }))
                   }
-                  paymentMethod={selectedOrder ? paymentMethods[selectedOrder.id] || '' : ''}
+                  paymentMethod={selectedOrder ? getSelectedPaymentMethod(paymentMethods, selectedOrder) : ''}
                   serverComments={serverComments}
                 />
               </aside>
@@ -1707,11 +2135,24 @@ function ServerPage() {
                 <span>
                   {item.quantity} x {formatPrice(item.price)}
                 </span>
+                {isRewardFreeItem(item) && <small className="ticket-free-tag">Gratuit</small>}
               </div>
-              <strong>{formatPrice(item.price * item.quantity)}</strong>
+              <strong>{isRewardFreeItem(item) ? '0 MAD' : formatPrice(item.price * item.quantity)}</strong>
             </div>
           ))}
           <div className="ticket-divider" />
+          {Number(activeTicket.discountAmount || 0) > 0 && (
+            <>
+              <div className="ticket-row">
+                <span>Sous-total</span>
+                <strong>{formatPrice(activeTicket.subtotal || activeTicket.total)}</strong>
+              </div>
+              <div className="ticket-row">
+                <span>{activeTicket.rewardNote || 'Reduction fidelite'}</span>
+                <strong>-{formatPrice(activeTicket.discountAmount)}</strong>
+              </div>
+            </>
+          )}
           <div className="ticket-row ticket-total">
             <span>Total</span>
             <strong>{formatPrice(activeTicket.total)}</strong>
@@ -1723,6 +2164,9 @@ function ServerPage() {
           {activeTicket.comment && (
             <p className="ticket-note">Note client : {activeTicket.comment}</p>
           )}
+          {activeTicket.rewardNote && (
+            <p className="ticket-note">Fidelite : {activeTicket.rewardNote}</p>
+          )}
           <p className="ticket-footer">Merci pour votre visite.</p>
         </section>
       )}
@@ -1732,6 +2176,8 @@ function ServerPage() {
 
 function ServerOrderCard({
   order,
+  slotInfo,
+  readySinceLabel,
   selected,
   primaryDisabled,
   onPrimary,
@@ -1740,6 +2186,7 @@ function ServerOrderCard({
 }) {
   const stage = getOrderStage(order);
   const visibleItems = order.items.slice(0, 3);
+  const discountAmount = getOrderDiscountAmount(order);
 
   return (
     <article
@@ -1760,13 +2207,32 @@ function ServerOrderCard({
         <span className={`status-badge status-${stage}`}>{getStatusLabel(order.status)}</span>
       </header>
 
-      <p className="server-order-id">{order.id}</p>
+        <p className="server-order-id">{order.id}</p>
 
-      <ul className="server-compact-items">
+        {stage === 'pickup' && slotInfo ? (
+          <div className="server-ready-meta">
+            <div className="server-ready-slot">
+              <span>Pickup</span>
+              <strong>Table {order.table}</strong>
+            </div>
+            <div
+              className="server-ready-slot-badge"
+              style={{ '--slot-accent': normalizeSlotAccent(slotInfo.color) }}
+            >
+              <span>{`Slot ${slotInfo.number}`}</span>
+              <strong>{slotInfo.colorName || slotInfo.color}</strong>
+            </div>
+          </div>
+        ) : null}
+
+        {stage === 'pickup' ? <p className="server-ready-timer">{readySinceLabel}</p> : null}
+
+        <ul className="server-compact-items">
         {visibleItems.map((item) => (
           <li key={`${order.id}-${item.id}`}>
             <span>
               {item.quantity}x {item.name}
+              {isRewardFreeItem(item) ? ' - Gratuit' : ''}
             </span>
           </li>
         ))}
@@ -1776,9 +2242,22 @@ function ServerOrderCard({
           </li>
         )}
       </ul>
+      {order.rewardNote && <p className="server-reward-note">{order.rewardNote}</p>}
+      {discountAmount > 0 && (
+        <div className="server-card-total-line server-card-total-subline">
+          <span>Sous-total</span>
+          <strong>{formatPrice(getOrderSubtotal(order))}</strong>
+        </div>
+      )}
+      {discountAmount > 0 && (
+        <div className="server-card-total-line server-card-total-discount">
+          <span>Reduction</span>
+          <strong>-{formatPrice(discountAmount)}</strong>
+        </div>
+      )}
 
       <div className="server-card-total-line">
-        <span>Total</span>
+        <span>Total final</span>
         <strong>{formatPrice(order.total)}</strong>
       </div>
 
@@ -1844,8 +2323,9 @@ function SelectedOrderPanel({
 
   const stage = getOrderStage(order);
   const billReady = isServedOrder(order);
-  const orderedProductIds = new Set(order.items.map((item) => item.id));
+  const orderedProductIds = new Set(order.items.filter((item) => !item.isRewardItem).map((item) => item.id));
   const productsToAdd = menuProducts.filter((product) => !orderedProductIds.has(product.id));
+  const discountAmount = getOrderDiscountAmount(order);
 
   return (
     <section className="server-payment-card server-selected-order-card">
@@ -1868,11 +2348,13 @@ function SelectedOrderPanel({
                 <span>
                   {item.quantity} x {formatPrice(item.price)}
                 </span>
+                {isRewardFreeItem(item) && <small className="server-item-inline-tag">Gratuit</small>}
               </div>
-              <strong>{formatPrice(item.price * item.quantity)}</strong>
+              <strong>{isRewardFreeItem(item) ? '0 MAD' : formatPrice(item.price * item.quantity)}</strong>
             </div>
           ))}
         </div>
+        {order.rewardNote && <p className="server-reward-note">{order.rewardNote}</p>}
       </div>
 
       {stage === 'validate' && (
@@ -1895,25 +2377,30 @@ function SelectedOrderPanel({
                       <span>
                         {item.quantity} x {formatPrice(item.price)}
                       </span>
+                      {isRewardFreeItem(item) && <small className="server-item-inline-tag">Gratuit</small>}
                     </div>
-                    <div className="quantity-actions server-edit-quantity">
-                      <button
-                        aria-label={`Retirer ${item.name}`}
-                        disabled={item.quantity === 0}
-                        type="button"
-                        onClick={() => onEditItem(order, product, -1)}
-                      >
-                        -
-                      </button>
-                      <span>{item.quantity}</span>
-                      <button
-                        aria-label={`Ajouter ${item.name}`}
-                        type="button"
-                        onClick={() => onEditItem(order, product, 1)}
-                      >
-                        +
-                      </button>
-                    </div>
+                    {isRewardFreeItem(item) ? (
+                      <strong className="server-item-inline-tag">Offert</strong>
+                    ) : (
+                      <div className="quantity-actions server-edit-quantity">
+                        <button
+                          aria-label={`Retirer ${item.name}`}
+                          disabled={item.quantity === 0}
+                          type="button"
+                          onClick={() => onEditItem(order, product, -1)}
+                        >
+                          -
+                        </button>
+                        <span>{item.quantity}</span>
+                        <button
+                          aria-label={`Ajouter ${item.name}`}
+                          type="button"
+                          onClick={() => onEditItem(order, product, 1)}
+                        >
+                          +
+                        </button>
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -1957,8 +2444,20 @@ function SelectedOrderPanel({
       </label>
 
       <div className="payment-summary server-panel-summary">
+        {discountAmount > 0 && (
+          <div>
+            <span>Sous-total</span>
+            <strong>{formatPrice(getOrderSubtotal(order))}</strong>
+          </div>
+        )}
+        {discountAmount > 0 && (
+          <div>
+            <span>Reduction</span>
+            <strong>-{formatPrice(discountAmount)}</strong>
+          </div>
+        )}
         <div>
-          <span>Total</span>
+          <span>Total final</span>
           <strong>{formatPrice(order.total)}</strong>
         </div>
         <div>
@@ -2013,8 +2512,10 @@ function SelectedOrderPanel({
   );
 }
 
-function HistoryOrderCard({ order, selected, onSelect }) {
+function HistoryOrderCard({ order, selected, onSelect, onReprint }) {
   const stage = getOrderStage(order);
+  const canReprint = isPaidOrder(order) && Boolean(order.items?.length);
+  const discountAmount = getOrderDiscountAmount(order);
   const statusClass =
     order.status === 'Payee'
       ? 'history-paid'
@@ -2049,16 +2550,44 @@ function HistoryOrderCard({ order, selected, onSelect }) {
           <li key={`history-${order.id}-${item.id}`}>
             <span>
               {item.quantity}x {item.name}
+              {isRewardFreeItem(item) ? ' - Gratuit' : ''}
             </span>
-            <strong>{formatPrice(item.price * item.quantity)}</strong>
+            <strong>{isRewardFreeItem(item) ? '0 MAD' : formatPrice(item.price * item.quantity)}</strong>
           </li>
         ))}
       </ul>
+      {order.rewardNote && <p className="server-reward-note">{order.rewardNote}</p>}
+      {discountAmount > 0 && (
+        <div className="server-card-total-line server-card-total-subline">
+          <span>Sous-total</span>
+          <strong>{formatPrice(getOrderSubtotal(order))}</strong>
+        </div>
+      )}
+      {discountAmount > 0 && (
+        <div className="server-card-total-line server-card-total-discount">
+          <span>Reduction</span>
+          <strong>-{formatPrice(discountAmount)}</strong>
+        </div>
+      )}
 
       <div className="server-card-total-line">
-        <span>Total</span>
+        <span>Total final</span>
         <strong>{formatPrice(order.total)}</strong>
       </div>
+      {canReprint && (
+        <div className="server-history-actions">
+          <button
+            className="btn btn-secondary"
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onReprint?.();
+            }}
+          >
+            Reimprimer l'addition
+          </button>
+        </div>
+      )}
     </article>
   );
 }

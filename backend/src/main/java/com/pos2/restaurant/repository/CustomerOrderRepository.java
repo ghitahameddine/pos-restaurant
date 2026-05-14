@@ -18,4 +18,9 @@ public interface CustomerOrderRepository extends JpaRepository<CustomerOrder, Lo
     List<CustomerOrder> findByStatusInOrderByCreatedAtDesc(Collection<OrderStatus> statuses);
 
     boolean existsByTableNumberAndStatusIn(Integer tableNumber, Collection<OrderStatus> statuses);
+
+    Optional<CustomerOrder> findFirstByClientPhoneAndStatusInOrderByCreatedAtDesc(
+            String clientPhone,
+            Collection<OrderStatus> statuses
+    );
 }

@@ -10,7 +10,6 @@ import com.pos2.restaurant.dto.auth.ResetPasswordRequest;
 import com.pos2.restaurant.exception.BadRequestException;
 import com.pos2.restaurant.exception.ResourceNotFoundException;
 import com.pos2.restaurant.repository.UserRepository;
-import com.pos2.restaurant.security.JwtService;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -22,12 +21,10 @@ public class AuthService {
 
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
-    private final JwtService jwtService;
 
-    public AuthService(UserRepository userRepository, PasswordEncoder passwordEncoder, JwtService jwtService) {
+    public AuthService(UserRepository userRepository, PasswordEncoder passwordEncoder) {
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
-        this.jwtService = jwtService;
     }
 
     @Transactional
@@ -51,6 +48,10 @@ public class AuthService {
     public AuthResponse login(LoginRequest request) {
         User user = userRepository.findByPhone(request.phone())
                 .orElseThrow(() -> new ResourceNotFoundException("Utilisateur introuvable."));
+
+        if (!user.isActive()) {
+            throw new BadRequestException("Ce compte est desactive.");
+        }
 
         if (!passwordEncoder.matches(request.password(), user.getPasswordHash())) {
             throw new BadRequestException("Mot de passe incorrect.");
@@ -77,18 +78,14 @@ public class AuthService {
         return "Mot de passe modifie avec succes.";
     }
 
-    public String generateJwt(User user) {
-        return jwtService.generateToken(user);
-    }
-
     private AuthResponse toAuthResponse(User user) {
         return new AuthResponse(
-                generateJwt(user),
                 user.getId(),
                 user.getPhone(),
                 user.getName(),
                 user.getRole(),
-                user.getPoints()
+                user.getPoints(),
+                user.getAssignedTables()
         );
     }
 
@@ -98,4 +95,3 @@ public class AuthService {
         }
     }
 }
-

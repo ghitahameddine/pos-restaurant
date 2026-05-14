@@ -18,9 +18,12 @@ public record OrderResponse(
         OrderStatus status,
         String comment,
         String serverComment,
+        BigDecimal subtotal,
         BigDecimal total,
         int points,
         PaymentMethod paymentMethod,
+        RewardResponse reward,
+        String rewardNote,
         Instant createdAt,
         Instant updatedAt,
         List<OrderLineResponse> items
@@ -35,13 +38,15 @@ public record OrderResponse(
                 order.getStatus(),
                 order.getComment(),
                 order.getServerComment(),
+                order.getSubtotal(),
                 order.getTotal(),
                 order.getPoints(),
                 order.getPaymentMethod(),
+                order.getRedeemedReward() != null ? RewardResponse.fromEntity(order.getRedeemedReward()) : null,
+                order.getRewardNote(),
                 order.getCreatedAt(),
                 order.getUpdatedAt(),
                 order.getItems().stream().map(OrderLineResponse::fromEntity).toList()
         );
     }
 }
-

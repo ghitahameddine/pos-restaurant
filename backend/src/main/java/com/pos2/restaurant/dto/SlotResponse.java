@@ -8,6 +8,7 @@ public record SlotResponse(
         Long id,
         Integer number,
         String color,
+        String colorName,
         SlotZone zone,
         SlotStatus status,
         Long currentOrderId
@@ -17,10 +18,10 @@ public record SlotResponse(
                 slot.getId(),
                 slot.getNumber(),
                 slot.getColor(),
+                slot.getColorName(),
                 slot.getZone(),
                 slot.getStatus(),
                 slot.getCurrentOrderId()
         );
     }
 }
-

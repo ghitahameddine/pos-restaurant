@@ -10,7 +10,7 @@ const OTP_CODE = '1234';
 const PHONE_STORAGE_KEY = 'pos2-client-phone';
 const AUTH_STORAGE_KEY = 'pos2-client-auth';
 
-function ClientAuth({ initialMode = 'sign-in', onAuthenticated }) {
+function ClientAuth({ initialMode = 'sign-in', onAuthenticated, onBackToMenu }) {
   const [mode, setMode] = useState(initialMode === 'sign-up' ? 'register' : 'login');
   const [phone, setPhone] = useState(() => localStorage.getItem(PHONE_STORAGE_KEY) || '');
   const [name, setName] = useState('');
@@ -35,7 +35,6 @@ function ClientAuth({ initialMode = 'sign-in', onAuthenticated }) {
     onAuthenticated?.({
       phone: auth.phone,
       name: auth.name,
-      token: auth.token,
       role: auth.role,
       points: auth.points,
     });
@@ -311,6 +310,9 @@ function ClientAuth({ initialMode = 'sign-in', onAuthenticated }) {
 
       {message && <p className="auth-message">{message}</p>}
       {error && <p className="auth-error">{error}</p>}
+      <button className="auth-text-button" type="button" onClick={onBackToMenu}>
+        Revenir au menu
+      </button>
     </section>
   );
 }

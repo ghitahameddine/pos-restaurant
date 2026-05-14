@@ -13,7 +13,8 @@ public record MenuItemResponse(
         String station,
         String description,
         String details,
-        String imageUrl
+        String imageUrl,
+        boolean available
 ) {
     public static MenuItemResponse fromEntity(MenuItem item) {
         return new MenuItemResponse(
@@ -25,8 +26,8 @@ public record MenuItemResponse(
                 item.getStation(),
                 item.getDescription(),
                 item.getDetails(),
-                item.getImageUrl()
+                item.getImageUrl(),
+                item.isAvailable()
         );
     }
 }
-

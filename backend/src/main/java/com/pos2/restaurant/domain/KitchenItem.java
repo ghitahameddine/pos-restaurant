@@ -28,7 +28,7 @@ public class KitchenItem {
     private CustomerOrder order;
 
     @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "order_line_id", nullable = false)
+    @JoinColumn(name = "order_line_id")
     private OrderLine orderLine;
 
     @Column(nullable = false)
@@ -45,6 +45,9 @@ public class KitchenItem {
     private KitchenItemStatus status = KitchenItemStatus.WAITING;
 
     @Column(nullable = false)
+    private boolean rewardItem = false;
+
+    @Column(nullable = false)
     private Instant createdAt;
 
     protected KitchenItem() {
@@ -59,8 +62,53 @@ public class KitchenItem {
         this.createdAt = Instant.now();
     }
 
+    public KitchenItem(CustomerOrder order, String itemName, int quantity, String station, boolean rewardItem) {
+        this.order = order;
+        this.orderLine = null;
+        this.station = station;
+        this.itemName = itemName;
+        this.quantity = quantity;
+        this.rewardItem = rewardItem;
+        this.createdAt = Instant.now();
+    }
+
     public Long getId() {
         return id;
     }
-}
 
+    public CustomerOrder getOrder() {
+        return order;
+    }
+
+    public OrderLine getOrderLine() {
+        return orderLine;
+    }
+
+    public String getStation() {
+        return station;
+    }
+
+    public String getItemName() {
+        return itemName;
+    }
+
+    public int getQuantity() {
+        return quantity;
+    }
+
+    public KitchenItemStatus getStatus() {
+        return status;
+    }
+
+    public boolean isRewardItem() {
+        return rewardItem;
+    }
+
+    public Instant getCreatedAt() {
+        return createdAt;
+    }
+
+    public void setStatus(KitchenItemStatus status) {
+        this.status = status;
+    }
+}

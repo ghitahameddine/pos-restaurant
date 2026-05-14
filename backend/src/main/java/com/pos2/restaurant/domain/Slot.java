@@ -25,6 +25,9 @@ public class Slot {
     @Column(nullable = false)
     private String color;
 
+    @Column
+    private String colorName;
+
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
     private SlotZone zone;
@@ -41,6 +44,14 @@ public class Slot {
     public Slot(Integer number, String color, SlotZone zone) {
         this.number = number;
         this.color = color;
+        this.colorName = color;
+        this.zone = zone;
+    }
+
+    public Slot(Integer number, String color, String colorName, SlotZone zone) {
+        this.number = number;
+        this.color = color;
+        this.colorName = colorName;
         this.zone = zone;
     }
 
@@ -52,12 +63,32 @@ public class Slot {
         return number;
     }
 
+    public void setNumber(Integer number) {
+        this.number = number;
+    }
+
     public String getColor() {
         return color;
     }
 
+    public void setColor(String color) {
+        this.color = color;
+    }
+
+    public String getColorName() {
+        return colorName == null || colorName.isBlank() ? color : colorName;
+    }
+
+    public void setColorName(String colorName) {
+        this.colorName = colorName;
+    }
+
     public SlotZone getZone() {
         return zone;
+    }
+
+    public void setZone(SlotZone zone) {
+        this.zone = zone;
     }
 
     public SlotStatus getStatus() {
@@ -78,4 +109,3 @@ public class Slot {
         this.currentOrderId = null;
     }
 }
-

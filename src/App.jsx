@@ -1,5 +1,7 @@
 import './App.css';
+import AdminPage from './pages/admin/AdminPage';
 import MenuPage from './pages/client/MenuPage';
+import KitchenPage from './pages/kitchen/KitchenPage';
 import QrCodesPage from './pages/QrCodesPage';
 import ServerPage from './pages/server/ServerPage';
 
@@ -22,6 +24,12 @@ function HomePage() {
           </a>
           <a className="secondary-link" href="/server">
             Ouvrir tablette serveur
+          </a>
+          <a className="secondary-link" href="/kitchen?station=plats">
+            Ouvrir ecran cuisine
+          </a>
+          <a className="secondary-link" href="/admin">
+            Ouvrir administration
           </a>
         </div>
       </section>
@@ -61,6 +69,14 @@ function App() {
 
   if (path === '/server') {
     return <ServerPage />;
+  }
+
+  if (path === '/kitchen') {
+    return <KitchenPage />;
+  }
+
+  if (path === '/admin') {
+    return <AdminPage />;
   }
 
   return <NotFoundPage />;

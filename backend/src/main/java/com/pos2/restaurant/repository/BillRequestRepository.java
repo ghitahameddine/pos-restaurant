@@ -10,4 +10,6 @@ public interface BillRequestRepository extends JpaRepository<BillRequest, Long> 
     List<BillRequest> findByStatusOrderByCreatedAtDesc(BillRequestStatus status);
 
     boolean existsByOrder_IdAndStatus(Long orderId, BillRequestStatus status);
+
+    java.util.Optional<BillRequest> findByOrder_IdAndStatus(Long orderId, BillRequestStatus status);
 }

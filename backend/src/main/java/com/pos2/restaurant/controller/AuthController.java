@@ -10,6 +10,7 @@ import com.pos2.restaurant.service.AuthService;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
@@ -36,6 +37,11 @@ public class AuthController {
         return authService.login(request);
     }
 
+    @GetMapping("/me")
+    public AuthMessageResponse me() {
+        return new AuthMessageResponse("Mode developpement: aucune securite serveur active.");
+    }
+
     @PostMapping("/forgot-password")
     public AuthMessageResponse forgotPassword(@Valid @RequestBody ForgotPasswordRequest request) {
         return new AuthMessageResponse(authService.forgotPassword(request));
@@ -46,4 +52,3 @@ public class AuthController {
         return new AuthMessageResponse(authService.resetPassword(request));
     }
 }
-

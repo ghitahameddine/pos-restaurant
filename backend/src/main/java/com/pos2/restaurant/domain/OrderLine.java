@@ -71,6 +71,10 @@ public class OrderLine {
         return menuItem.getId();
     }
 
+    public String getStation() {
+        return menuItem.getStation();
+    }
+
     public String getItemName() {
         return itemName;
     }
@@ -91,4 +95,3 @@ public class OrderLine {
         return lineTotal;
     }
 }
-

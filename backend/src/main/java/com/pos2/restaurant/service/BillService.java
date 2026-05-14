@@ -13,8 +13,6 @@ import com.pos2.restaurant.exception.ResourceNotFoundException;
 import com.pos2.restaurant.repository.BillRequestRepository;
 import com.pos2.restaurant.repository.CustomerOrderRepository;
 import com.pos2.restaurant.repository.RestaurantTableRepository;
-import org.springframework.security.core.Authentication;
-import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -60,7 +58,6 @@ public class BillService {
     @Transactional
     public BillRequestResponse requestBill(CreateBillRequest request) {
         CustomerOrder order = orderService.findOrder(request.orderId());
-        resolveAuthenticatedClientPhone().ifPresent(order::attachClientPhone);
 
         if (order.getStatus() == OrderStatus.PAID || order.getStatus() == OrderStatus.CANCELLED) {
             throw new BadRequestException("Cette commande est deja cloturee.");
@@ -71,7 +68,7 @@ public class BillService {
 
         BillRequest billRequest = new BillRequest(generateBillNumber(), order);
         tableRepository.findByNumber(order.getTableNumber()).ifPresent(table -> {
-            table.setStatus(TableStatus.BILL_REQUESTED);
+            table.setStatus(TableStatus.IN_SERVICE);
             tableRepository.save(table);
         });
 
@@ -100,7 +97,7 @@ public class BillService {
 
         billRequest.markPrinted();
         tableRepository.findByNumber(order.getTableNumber()).ifPresent(table -> {
-            table.setStatus(TableStatus.AVAILABLE);
+            table.setStatus(TableStatus.PAID_STILL_SEATED);
             tableRepository.save(table);
         });
         qrSessionService.closeActiveSessionsForTable(order.getTableNumber());
@@ -114,20 +111,5 @@ public class BillService {
 
     private String generateBillNumber() {
         return "BILL-" + LocalDateTime.now().format(BILL_FORMAT);
-    }
-
-    private java.util.Optional<String> resolveAuthenticatedClientPhone() {
-        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
-        if (authentication == null || !authentication.isAuthenticated()) {
-            return java.util.Optional.empty();
-        }
-
-        boolean isClient = authentication.getAuthorities().stream()
-                .anyMatch(authority -> "ROLE_CLIENT".equals(authority.getAuthority()));
-        if (!isClient || authentication.getName() == null || authentication.getName().isBlank()) {
-            return java.util.Optional.empty();
-        }
-
-        return java.util.Optional.of(authentication.getName());
     }
 }

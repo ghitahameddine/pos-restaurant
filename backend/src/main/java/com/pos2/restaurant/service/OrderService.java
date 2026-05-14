@@ -4,6 +4,7 @@ import com.pos2.restaurant.domain.CustomerOrder;
 import com.pos2.restaurant.domain.MenuItem;
 import com.pos2.restaurant.domain.OrderLine;
 import com.pos2.restaurant.domain.QrSession;
+import com.pos2.restaurant.domain.RestaurantState;
 import com.pos2.restaurant.domain.RestaurantTable;
 import com.pos2.restaurant.domain.enums.OrderSource;
 import com.pos2.restaurant.domain.enums.OrderStatus;
@@ -19,9 +20,8 @@ import com.pos2.restaurant.exception.ResourceNotFoundException;
 import com.pos2.restaurant.repository.CustomerOrderRepository;
 import com.pos2.restaurant.repository.MenuItemRepository;
 import com.pos2.restaurant.repository.QrSessionRepository;
+import com.pos2.restaurant.repository.RestaurantStateRepository;
 import com.pos2.restaurant.repository.RestaurantTableRepository;
-import org.springframework.security.core.Authentication;
-import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -40,14 +40,18 @@ public class OrderService {
     private final QrSessionRepository qrSessionRepository;
     private final RealtimeService realtimeService;
     private final RewardService rewardService;
+    private final KitchenService kitchenService;
+    private final RestaurantStateRepository restaurantStateRepository;
 
-    public OrderService(CustomerOrderRepository orderRepository, MenuItemRepository menuItemRepository, RestaurantTableRepository tableRepository, QrSessionRepository qrSessionRepository, RealtimeService realtimeService, RewardService rewardService) {
+    public OrderService(CustomerOrderRepository orderRepository, MenuItemRepository menuItemRepository, RestaurantTableRepository tableRepository, QrSessionRepository qrSessionRepository, RealtimeService realtimeService, RewardService rewardService, KitchenService kitchenService, RestaurantStateRepository restaurantStateRepository) {
         this.orderRepository = orderRepository;
         this.menuItemRepository = menuItemRepository;
         this.tableRepository = tableRepository;
         this.qrSessionRepository = qrSessionRepository;
         this.realtimeService = realtimeService;
         this.rewardService = rewardService;
+        this.kitchenService = kitchenService;
+        this.restaurantStateRepository = restaurantStateRepository;
     }
 
     @Transactional(readOnly = true)
@@ -78,6 +82,7 @@ public class OrderService {
                 .orElseThrow(() -> new ResourceNotFoundException("Table introuvable: " + request.tableNumber()));
 
         OrderSource source = request.source() == null ? OrderSource.CLIENT_QR : request.source();
+        ensureRestaurantAcceptsOrders(source);
         OrderStatus initialStatus = source == OrderSource.SERVER_ASSISTED
                 ? OrderStatus.CONFIRMED
                 : OrderStatus.PENDING_SERVER_VALIDATION;
@@ -104,7 +109,12 @@ public class OrderService {
         table.setStatus(TableStatus.IN_SERVICE);
         tableRepository.save(table);
 
-        OrderResponse response = OrderResponse.fromEntity(orderRepository.save(order));
+        CustomerOrder savedOrder = orderRepository.save(order);
+        if (savedOrder.getStatus() == OrderStatus.CONFIRMED || savedOrder.getStatus() == OrderStatus.IN_KITCHEN) {
+            kitchenService.prepareOrderForKitchen(savedOrder);
+        }
+
+        OrderResponse response = OrderResponse.fromEntity(orderRepository.save(savedOrder));
         realtimeService.publishOrder(response);
         realtimeService.publishTable(response.tableNumber());
         return response;
@@ -123,9 +133,39 @@ public class OrderService {
             rewardService.awardPaidOrderPoints(order);
         }
 
+        if (request.status() == OrderStatus.CONFIRMED || request.status() == OrderStatus.IN_KITCHEN) {
+            kitchenService.prepareOrderForKitchen(order);
+        }
+
+        if (request.status() == OrderStatus.SERVED) {
+            kitchenService.releaseCounterSlotForOrder(order.getId());
+        }
+
+        if (request.status() == OrderStatus.PAID || request.status() == OrderStatus.CANCELLED) {
+            kitchenService.releaseAllKitchenResources(order.getId(), true);
+        }
+
         tableRepository.findByNumber(order.getTableNumber()).ifPresent(table -> {
-            if (request.status() == OrderStatus.PAID || request.status() == OrderStatus.CANCELLED) {
-                table.setStatus(TableStatus.AVAILABLE);
+            if (request.status() == OrderStatus.PAID) {
+                table.setStatus(TableStatus.PAID_STILL_SEATED);
+            } else if (request.status() == OrderStatus.CANCELLED) {
+                List<OrderStatus> activeStatuses = List.of(
+                        OrderStatus.PENDING_SERVER_VALIDATION,
+                        OrderStatus.CONFIRMED,
+                        OrderStatus.IN_KITCHEN,
+                        OrderStatus.READY,
+                        OrderStatus.SERVED
+                );
+                boolean hasOtherActiveOrders = orderRepository.existsByTableNumberAndStatusIn(
+                        order.getTableNumber(),
+                        activeStatuses
+                );
+                if (hasOtherActiveOrders) {
+                    table.setStatus(TableStatus.IN_SERVICE);
+                } else if (table.getStatus() != TableStatus.PAID_STILL_SEATED
+                        && table.getStatus() != TableStatus.CLEANING) {
+                    table.setStatus(TableStatus.AVAILABLE);
+                }
             } else {
                 table.setStatus(TableStatus.IN_SERVICE);
             }
@@ -210,13 +250,23 @@ public class OrderService {
         return "ORD-" + LocalDateTime.now().format(ORDER_FORMAT);
     }
 
-    private String resolveClientPhone(String requestedPhone) {
-        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
-        if (authentication != null && authentication.isAuthenticated() && authentication.getAuthorities().stream()
-                .anyMatch(authority -> "ROLE_CLIENT".equals(authority.getAuthority()))) {
-            return authentication.getName();
+    private void ensureRestaurantAcceptsOrders(OrderSource source) {
+        RestaurantState state = restaurantStateRepository.findById(1L).orElse(null);
+        if (state == null) {
+            return;
         }
+        if (!state.isOpen()) {
+            throw new BadRequestException("Restaurant ferme pour le moment.");
+        }
+        if (state.isOrderingPaused()) {
+            throw new BadRequestException("Les commandes sont temporairement pausees.");
+        }
+        if (source == OrderSource.CLIENT_QR && state.isQrOrderingPaused()) {
+            throw new BadRequestException("Commande QR temporairement pausee.");
+        }
+    }
 
+    private String resolveClientPhone(String requestedPhone) {
         if (requestedPhone == null || requestedPhone.isBlank()) {
             return null;
         }

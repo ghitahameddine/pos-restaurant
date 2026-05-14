@@ -11,10 +11,13 @@ import jakarta.persistence.Enumerated;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import jakarta.persistence.JoinColumn;
+import jakarta.persistence.ManyToOne;
 import jakarta.persistence.OneToMany;
 import jakarta.persistence.Table;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -50,6 +53,9 @@ public class CustomerOrder {
     private String serverComment;
 
     @Column(nullable = false, precision = 10, scale = 2)
+    private BigDecimal subtotal = BigDecimal.ZERO;
+
+    @Column(nullable = false, precision = 10, scale = 2)
     private BigDecimal total = BigDecimal.ZERO;
 
     @Column(nullable = false)
@@ -60,6 +66,10 @@ public class CustomerOrder {
 
     @Enumerated(EnumType.STRING)
     private PaymentMethod paymentMethod;
+
+    @ManyToOne
+    @JoinColumn(name = "redeemed_reward_id")
+    private Reward redeemedReward;
 
     @Column(nullable = false)
     private Instant createdAt;
@@ -91,13 +101,28 @@ public class CustomerOrder {
     }
 
     public void recalculateTotals() {
-        this.total = items.stream()
+        this.subtotal = items.stream()
                 .map(OrderLine::getLineTotal)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
-        this.points = items.stream()
-                .mapToInt(line -> line.getPoints() * line.getQuantity())
-                .sum();
+        this.total = applyRewardToSubtotal(this.subtotal);
+        this.points = this.total
+                .divide(BigDecimal.TEN, 0, RoundingMode.DOWN)
+                .intValue();
         this.updatedAt = Instant.now();
+    }
+
+    private BigDecimal applyRewardToSubtotal(BigDecimal baseSubtotal) {
+        if (redeemedReward == null || redeemedReward.getType() != com.pos2.restaurant.domain.enums.RewardType.DISCOUNT
+                || redeemedReward.getDiscountPercent() == null
+                || redeemedReward.getDiscountPercent().compareTo(BigDecimal.ZERO) <= 0) {
+            return baseSubtotal;
+        }
+
+        BigDecimal discountAmount = baseSubtotal
+                .multiply(redeemedReward.getDiscountPercent())
+                .divide(BigDecimal.valueOf(100), 2, RoundingMode.HALF_UP);
+
+        return baseSubtotal.subtract(discountAmount).max(BigDecimal.ZERO);
     }
 
     public Long getId() {
@@ -158,6 +183,10 @@ public class CustomerOrder {
         return total;
     }
 
+    public BigDecimal getSubtotal() {
+        return subtotal;
+    }
+
     public int getPoints() {
         return points;
     }
@@ -178,6 +207,48 @@ public class CustomerOrder {
     public void setPaymentMethod(PaymentMethod paymentMethod) {
         this.paymentMethod = paymentMethod;
         this.updatedAt = Instant.now();
+    }
+
+    public Reward getRedeemedReward() {
+        return redeemedReward;
+    }
+
+    public void applyReward(Reward reward) {
+        this.redeemedReward = reward;
+        recalculateTotals();
+    }
+
+    public boolean hasRedeemedReward() {
+        return redeemedReward != null;
+    }
+
+    public String getRewardNote() {
+        if (redeemedReward == null) {
+            return null;
+        }
+
+        if (redeemedReward.getType() == com.pos2.restaurant.domain.enums.RewardType.FREE_ITEM) {
+            String rewardText = ((redeemedReward.getDescription() == null ? "" : redeemedReward.getDescription())
+                    + " "
+                    + (redeemedReward.getName() == null ? "" : redeemedReward.getName()))
+                    .toLowerCase();
+
+            if (rewardText.contains("orange")) {
+                return "Article offert : Jus Orange Frais";
+            }
+
+            if (rewardText.contains("dessert")) {
+                return "Article offert : Tiramisu";
+            }
+
+            return "Article offert : " + redeemedReward.getName();
+        }
+
+        if (redeemedReward.getDiscountPercent() != null) {
+            return "Reduction fidelite appliquee : " + redeemedReward.getDiscountPercent().stripTrailingZeros().toPlainString() + "%";
+        }
+
+        return redeemedReward.getDescription();
     }
 
     public Instant getCreatedAt() {

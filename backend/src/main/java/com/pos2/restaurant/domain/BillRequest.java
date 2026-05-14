@@ -86,6 +86,10 @@ public class BillRequest {
         return total;
     }
 
+    public void syncTotalFromOrder() {
+        this.total = order.getTotal();
+    }
+
     public Instant getCreatedAt() {
         return createdAt;
     }
@@ -94,4 +98,3 @@ public class BillRequest {
         return printedAt;
     }
 }
-

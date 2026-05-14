@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { menuCategories, menuProducts, rewardLevels } from '../../data/menuProducts';
+import { menuCategories, menuProducts } from '../../data/menuProducts';
 import { formatPrice } from '../../utils/format';
 import {
   addStoredOrder,
@@ -7,13 +7,15 @@ import {
   getStoredOrders,
   updateStoredOrder,
 } from '../../utils/ordersStorage';
-import { addOrderToHistory, addRewardPoints, getRewardsProfile } from '../../utils/rewardsStorage';
 import { addBillRequest } from '../../utils/billRequestsStorage';
 import {
   clientCancelApiOrder,
   clientUpdateApiOrder,
   createApiBillRequest,
   createApiOrder,
+  fetchMyLoyaltyApi,
+  redeemRewardApi,
+  subscribeRealtime,
 } from '../../utils/api';
 import {
   addOrderToQrSession,
@@ -75,6 +77,101 @@ function getStoredClientAuth() {
   }
 }
 
+function getDefaultLoyaltyRewards() {
+  return {
+    totalPoints: getStoredClientAuth()?.points || 0,
+    rewards: [],
+    transactions: [],
+  };
+}
+
+function getEstimatedProductPoints(price) {
+  return Math.floor(Number(price || 0) / 10);
+}
+
+function findRewardTargetProduct(reward) {
+  if (!reward) return null;
+
+  const rewardText = `${reward.name || ''} ${reward.description || ''}`.toLowerCase();
+
+  if (rewardText.includes('orange')) {
+    return menuProducts.find((product) => product.name === 'Jus Orange Frais') || null;
+  }
+
+  if (rewardText.includes('dessert')) {
+    return (
+      menuProducts.find((product) => product.name === 'Tiramisu') ||
+      menuProducts.find((product) => product.category === 'Desserts') ||
+      null
+    );
+  }
+
+  return null;
+}
+
+function getRewardDisplayName(reward) {
+  return findRewardTargetProduct(reward)?.name || reward?.name || 'Recompense';
+}
+
+function getRewardDiscountPercent(reward) {
+  if (!reward || reward.type !== 'DISCOUNT') return 0;
+  return Number(reward.discountPercent || 20);
+}
+
+function getRewardNote(reward) {
+  if (!reward) return '';
+
+  if (reward.type === 'FREE_ITEM') {
+    return `Article offert : ${getRewardDisplayName(reward)}`;
+  }
+
+  return `Reduction fidelite appliquee : ${getRewardDiscountPercent(reward)}%`;
+}
+
+function applyRewardPreviewToOrder(order, reward) {
+  if (!order || !reward) return order;
+
+  const targetProduct = findRewardTargetProduct(reward);
+  const cleanItems = (order.items || []).filter((item) => !item.isRewardItem);
+
+  const previewOrder = {
+    ...order,
+    items: cleanItems,
+    reward: {
+      id: reward.id,
+      name: getRewardDisplayName(reward),
+      description: reward.description,
+      pointsCost: reward.pointsCost,
+      type: reward.type,
+      discountPercent: reward.discountPercent || null,
+    },
+    rewardNote: getRewardNote(reward),
+  };
+
+  if (reward.type === 'FREE_ITEM') {
+    previewOrder.items = [
+      ...cleanItems,
+      {
+        id: `reward-${reward.id}`,
+        productId: targetProduct?.id || null,
+        name: targetProduct?.name || reward.name,
+        price: 0,
+        quantity: 1,
+        points: 0,
+        isRewardItem: true,
+        rewardLabel: 'Offert',
+      },
+    ];
+    return previewOrder;
+  }
+
+  const subtotal = Number(previewOrder.subtotal || previewOrder.total || 0);
+  const discountAmount = Math.round((subtotal * getRewardDiscountPercent(reward)) / 100 * 100) / 100;
+  previewOrder.discountAmount = discountAmount;
+  previewOrder.total = Math.max(0, subtotal - discountAmount);
+  return previewOrder;
+}
+
 function MenuPage() {
   const tableNumber = getTableNumber();
   const draftLoadedRef = useRef(false);
@@ -89,8 +186,11 @@ function MenuPage() {
   const [activeCategory, setActiveCategory] = useState('Tous');
   const [selectedProduct, setSelectedProduct] = useState(menuProducts[0]);
   const [detailProduct, setDetailProduct] = useState(null);
-  const [rewardsProfile, setRewardsProfile] = useState(() => getRewardsProfile());
-  const [earnedPoints, setEarnedPoints] = useState(0);
+  const [rewardsProfile, setRewardsProfile] = useState(() => getDefaultLoyaltyRewards());
+  const [loyaltyMessage, setLoyaltyMessage] = useState('');
+  const [loyaltyError, setLoyaltyError] = useState('');
+  const [redeemingRewardId, setRedeemingRewardId] = useState(null);
+  const [selectedRewardId, setSelectedRewardId] = useState(null);
   const [billRequestStatus, setBillRequestStatus] = useState('');
   const [sessionOrders, setSessionOrders] = useState([]);
   const [isLinkExpired, setIsLinkExpired] = useState(false);
@@ -98,7 +198,7 @@ function MenuPage() {
   const [authMenuOpen, setAuthMenuOpen] = useState(false);
   const [cartOpen, setCartOpen] = useState(false);
 
-  const total = useMemo(
+  const subtotal = useMemo(
     () => cart.reduce((sum, item) => sum + item.price * item.quantity, 0),
     [cart],
   );
@@ -111,28 +211,66 @@ function MenuPage() {
     return menuProducts.filter((product) => product.category === activeCategory);
   }, [activeCategory]);
 
-  const cartCount = useMemo(
-    () => cart.reduce((sum, item) => sum + item.quantity, 0),
-    [cart],
-  );
-
-  const cartPoints = useMemo(
-    () => cart.reduce((sum, item) => sum + item.points * item.quantity, 0),
-    [cart],
-  );
-
   const nextReward = useMemo(() => {
-    const nextLevel = rewardLevels.find((reward) => reward.points > rewardsProfile.totalPoints);
-    return nextLevel || rewardLevels[rewardLevels.length - 1];
+    const orderedRewards = [...(rewardsProfile.rewards || [])].sort(
+      (firstReward, secondReward) => firstReward.pointsCost - secondReward.pointsCost,
+    );
+    return (
+      orderedRewards.find((reward) => reward.pointsCost > rewardsProfile.totalPoints) ||
+      orderedRewards[orderedRewards.length - 1] ||
+      null
+    );
   }, [rewardsProfile.totalPoints]);
 
   const rewardProgress = useMemo(() => {
     if (!nextReward) return 100;
-    return Math.min(100, Math.round((rewardsProfile.totalPoints / nextReward.points) * 100));
+    return Math.min(100, Math.round((rewardsProfile.totalPoints / nextReward.pointsCost) * 100));
   }, [nextReward, rewardsProfile.totalPoints]);
 
+  const selectedReward = useMemo(
+    () =>
+      (rewardsProfile.rewards || []).find((reward) => String(reward.id) === String(selectedRewardId)) ||
+      null,
+    [rewardsProfile.rewards, selectedRewardId],
+  );
+
+  const rewardDiscountAmount = useMemo(() => {
+    if (!selectedReward || selectedReward.type !== 'DISCOUNT') return 0;
+    return Math.round((subtotal * getRewardDiscountPercent(selectedReward)) / 100 * 100) / 100;
+  }, [selectedReward, subtotal]);
+
+  const total = useMemo(
+    () => Math.max(0, subtotal - rewardDiscountAmount),
+    [subtotal, rewardDiscountAmount],
+  );
+
+  const rewardPreviewItem = useMemo(() => {
+    if (!selectedReward || selectedReward.type !== 'FREE_ITEM') return null;
+
+    return {
+      id: `reward-preview-${selectedReward.id}`,
+      name: selectedReward.name,
+      price: 0,
+      quantity: 1,
+      isRewardItem: true,
+      rewardLabel: 'Offert',
+    };
+  }, [selectedReward]);
+
+  const cartDisplayItems = useMemo(
+    () => (rewardPreviewItem ? [...cart, rewardPreviewItem] : cart),
+    [cart, rewardPreviewItem],
+  );
+
+  const cartCount = useMemo(
+    () => cartDisplayItems.reduce((sum, item) => sum + item.quantity, 0),
+    [cartDisplayItems],
+  );
+
+  const cartPoints = useMemo(() => Math.floor(total / 10), [total]);
+
   const submittedOrderId = submittedOrder?.id;
-  const isClientAuthenticated = accessMode !== 'direct';
+  const isClientAuthenticated = accessMode !== 'direct' && Boolean(getStoredClientAuth()?.phone);
   const visibleSessionOrders = useMemo(() => {
     const orderMap = new Map();
 
@@ -155,14 +293,20 @@ function MenuPage() {
   useEffect(() => {
     if (!submittedOrderId) return undefined;
 
-    const intervalId = window.setInterval(() => {
+    const syncSubmittedOrderFromStorage = () => {
       const storedOrder = findStoredOrder(submittedOrderId);
       if (storedOrder) {
         setSubmittedOrder(storedOrder);
       }
-    }, 1000);
+    };
 
-    return () => window.clearInterval(intervalId);
+    window.addEventListener('focus', syncSubmittedOrderFromStorage);
+    document.addEventListener('visibilitychange', syncSubmittedOrderFromStorage);
+
+    return () => {
+      window.removeEventListener('focus', syncSubmittedOrderFromStorage);
+      document.removeEventListener('visibilitychange', syncSubmittedOrderFromStorage);
+    };
   }, [submittedOrderId]);
 
   useEffect(() => {
@@ -181,10 +325,10 @@ function MenuPage() {
       setClientName(draft.clientName || '');
       setClientPhone(draft.clientPhone || '');
       setCart(Array.isArray(draft.cart) ? draft.cart : []);
+      setSelectedRewardId(draft.selectedRewardId || null);
       setOrderComment(draft.orderComment || '');
       setEditingOrderId(draft.editingOrderId || null);
       setActiveCategory(draft.activeCategory || 'Tous');
-      setEarnedPoints(Number(draft.earnedPoints || 0));
       setBillRequestStatus(draft.billRequestStatus || '');
 
       const restoredProduct = menuProducts.find((product) => product.id === draft.selectedProductId);
@@ -212,13 +356,13 @@ function MenuPage() {
       clientName,
       clientPhone,
       cart,
+      selectedRewardId,
       orderComment,
       editingOrderId,
       submittedOrderId: submittedOrder?.id || null,
       submittedOrder,
       activeCategory,
       selectedProductId: selectedProduct?.id,
-      earnedPoints,
       billRequestStatus,
       updatedAt: new Date().toISOString(),
     });
@@ -230,10 +374,10 @@ function MenuPage() {
     clientName,
     clientPhone,
     editingOrderId,
-    earnedPoints,
     isLinkExpired,
     orderComment,
     qrToken,
+    selectedRewardId,
     selectedProduct?.id,
     step,
     submittedOrder,
@@ -241,6 +385,9 @@ function MenuPage() {
   ]);
 
   useEffect(() => {
+    let expiryTimeoutId = null;
+    let sessionCheckId = null;
+
     const refreshSession = () => {
       const urlToken = getQrTokenFromUrl();
       let currentSession = getQrSession(tableNumber);
@@ -259,7 +406,6 @@ function MenuPage() {
       }
 
       const storedOrders = getStoredOrders();
-      const currentProfile = getRewardsProfile();
       const tokenMatches = currentSession?.token === (urlToken || currentSession?.token);
       const linkIsExpired = !tokenMatches || isGuestSessionExpired(currentSession);
       const activeSessionOrders = currentSession && tokenMatches
@@ -267,15 +413,122 @@ function MenuPage() {
         : [];
 
       setSessionOrders(activeSessionOrders);
-      setRewardsProfile(currentProfile);
       setIsLinkExpired(linkIsExpired);
+
+      if (expiryTimeoutId) {
+        window.clearTimeout(expiryTimeoutId);
+      }
+
+      if (!linkIsExpired && currentSession?.expiresAt) {
+        const delayUntilExpiry = Math.max(0, Date.parse(currentSession.expiresAt) - Date.now());
+        expiryTimeoutId = window.setTimeout(refreshSession, delayUntilExpiry + 250);
+      }
     };
 
     refreshSession();
-    const intervalId = window.setInterval(refreshSession, 1000);
+    sessionCheckId = window.setInterval(refreshSession, 30000);
 
-    return () => window.clearInterval(intervalId);
+    return () => {
+      if (expiryTimeoutId) {
+        window.clearTimeout(expiryTimeoutId);
+      }
+      if (sessionCheckId) {
+        window.clearInterval(sessionCheckId);
+      }
+    };
   }, [tableNumber]);
+
+  useEffect(() => {
+    const stopRealtime = subscribeRealtime({
+      onOrder: (updatedOrder) => {
+        if (!updatedOrder) return;
+
+        setSessionOrders((currentOrders) => {
+          const belongsToSession = currentOrders.some(
+            (currentOrder) =>
+              currentOrder.id === updatedOrder.id ||
+              Number(currentOrder.backendId) === Number(updatedOrder.backendId),
+          );
+
+          if (!belongsToSession) {
+            return currentOrders;
+          }
+
+          updateStoredOrder(updatedOrder.id, updatedOrder);
+
+          return currentOrders.map((currentOrder) =>
+            currentOrder.id === updatedOrder.id ||
+            Number(currentOrder.backendId) === Number(updatedOrder.backendId)
+              ? updatedOrder
+              : currentOrder,
+          );
+        });
+
+        setSubmittedOrder((currentOrder) => {
+          if (
+            !currentOrder ||
+            (currentOrder.id !== updatedOrder.id &&
+              Number(currentOrder.backendId) !== Number(updatedOrder.backendId))
+          ) {
+            return currentOrder;
+          }
+
+          updateStoredOrder(updatedOrder.id, updatedOrder);
+          return updatedOrder;
+        });
+      },
+      onBillRequest: () => {
+        setBillRequestStatus((currentStatus) => currentStatus);
+      },
+    });
+
+    return stopRealtime;
+  }, []);
+
+  useEffect(() => {
+    if (!isClientAuthenticated) {
+      setRewardsProfile(getDefaultLoyaltyRewards());
+      return undefined;
+    }
+
+    let isMounted = true;
+
+    const loadLoyalty = async () => {
+      try {
+        const loyalty = await fetchMyLoyaltyApi();
+        if (!isMounted) return;
+        setRewardsProfile({
+          totalPoints: Number(loyalty.points || 0),
+          rewards: loyalty.rewards || [],
+          transactions: loyalty.transactions || [],
+        });
+      } catch (error) {
+        if (!isMounted) return;
+        setRewardsProfile(getDefaultLoyaltyRewards());
+        setLoyaltyError('');
+      }
+    };
+
+    loadLoyalty();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [isClientAuthenticated]);
+
+  const replaceOrderEverywhere = (updatedOrder) => {
+    if (!updatedOrder?.id) return;
+
+    updateStoredOrder(updatedOrder.id, updatedOrder);
+    setSessionOrders((currentOrders) =>
+      currentOrders.map((currentOrder) =>
+        currentOrder.id === updatedOrder.id ? updatedOrder : currentOrder,
+      ),
+    );
+    if (submittedOrder?.id === updatedOrder.id) {
+      setSubmittedOrder(updatedOrder);
+    }
+  };
 
   const addToCart = (product) => {
     setCart((currentCart) => {
@@ -307,11 +560,16 @@ function MenuPage() {
     setClientName('');
     setClientPhone('');
     setAuthMenuOpen(false);
+    setRewardsProfile(getDefaultLoyaltyRewards());
+    setLoyaltyMessage('');
+    setLoyaltyError('');
+    setSelectedRewardId(null);
     setStep(MENU_STEP);
   };
 
   const returnToMenuForAnotherOrder = () => {
     setCart([]);
+    setSelectedRewardId(null);
     setOrderComment('');
     setEditingOrderId(null);
     setBillRequestStatus('');
@@ -332,9 +590,7 @@ function MenuPage() {
     setAuthMenuOpen(false);
 
     if (mode === 'sign-in' || mode === 'sign-up') {
-      const profile = getRewardsProfile();
-      setRewardsProfile(profile);
-      setClientName(profile.clientName || '');
+      setClientName(getStoredClientAuth()?.name || '');
       setStep(AUTH_STEP);
       return;
     }
@@ -342,39 +598,31 @@ function MenuPage() {
     setStep(MENU_STEP);
   };
 
-  const handleClientAuthenticated = ({ phone, name }) => {
-    const profile = getRewardsProfile();
-    setClientName(profile.clientName || name || phone);
+  const handleClientAuthenticated = ({ phone, name, points }) => {
+    setClientName(name || phone);
     setClientPhone(phone || '');
     setRewardsProfile({
-      ...profile,
-      clientName: profile.clientName || name || phone,
+      ...getDefaultLoyaltyRewards(),
+      totalPoints: typeof points === 'number' ? points : 0,
     });
+    setSelectedRewardId(null);
     setAuthMenuOpen(false);
     setStep(MENU_STEP);
   };
 
   const startRewards = () => {
     setAccessMode('sign-in');
-    const profile = getRewardsProfile();
-    setRewardsProfile(profile);
-    setClientName(profile.clientName || '');
+    setClientName(getStoredClientAuth()?.name || '');
     setAuthMenuOpen(false);
     setStep(AUTH_STEP);
   };
 
+  const returnFromAuthToMenu = () => {
+    setStep(MENU_STEP);
+  };
+
   const claimCurrentOrderRewards = (mode) => {
-    if (!submittedOrder || accessMode !== 'direct') return;
-
-    const nextProfile = addRewardPoints({
-      clientName: clientName || 'Client fidele',
-      points: submittedOrder.points,
-    });
-
-    addOrderToHistory(submittedOrder);
-    setAccessMode(mode);
-    setRewardsProfile(nextProfile);
-    setEarnedPoints(submittedOrder.points);
+    continueToMenu(mode);
   };
 
   const openProductDetails = (product) => {
@@ -398,9 +646,21 @@ function MenuPage() {
       clientPhone,
       accessMode,
       comment: orderComment,
+      subtotal,
       total,
       points: cartPoints,
-      items: cart,
+      items: cart.filter((item) => !item.isRewardItem),
+      reward: selectedReward
+        ? {
+            id: selectedReward.id,
+            name: selectedReward.name,
+            description: selectedReward.description,
+            pointsCost: selectedReward.pointsCost,
+            type: selectedReward.type,
+            discountPercent: selectedReward.discountPercent || null,
+          }
+        : null,
+      rewardNote: selectedReward ? getRewardNote(selectedReward) : '',
       status: PENDING_STATUS,
       sourceLabel: accessMode === 'direct' ? 'Commande directe QR' : 'Client authentifie',
       createdAt: existingOrder?.createdAt || createdAt,
@@ -413,24 +673,41 @@ function MenuPage() {
       savedOrder = editingOrderId && existingOrder?.backendId
         ? await clientUpdateApiOrder(order, qrToken)
         : await createApiOrder(order);
+
+      if (selectedReward && savedOrder?.backendId && isClientAuthenticated) {
+        setRedeemingRewardId(selectedReward.id);
+        try {
+          const rewardResponse = await redeemRewardApi(selectedReward.id);
+          if (rewardResponse.order) {
+            savedOrder = rewardResponse.order;
+          }
+
+          const loyalty = await fetchMyLoyaltyApi();
+          setRewardsProfile({
+            totalPoints: Number(loyalty.points || 0),
+            rewards: loyalty.rewards || [],
+            transactions: loyalty.transactions || [],
+          });
+          setLoyaltyMessage(rewardResponse.message || 'Recompense appliquee a la commande.');
+        } finally {
+          setRedeemingRewardId(null);
+        }
+      }
+
+      if (selectedReward && !savedOrder?.rewardNote) {
+        savedOrder = applyRewardPreviewToOrder(savedOrder, selectedReward);
+      }
     } catch (error) {
       console.warn('Backend indisponible, commande gardee en localStorage.', error);
+      if (selectedReward) {
+        savedOrder = applyRewardPreviewToOrder(savedOrder, selectedReward);
+      }
     }
 
     if (editingOrderId) {
       updateStoredOrder(savedOrder.id, savedOrder);
     } else {
       addStoredOrder(savedOrder);
-    }
-
-    if (accessMode !== 'direct') {
-      const nextProfile = addRewardPoints({
-        clientName: clientName || 'Client fidele',
-        points: savedOrder.points || cartPoints,
-      });
-      addOrderToHistory(savedOrder);
-      setRewardsProfile(nextProfile);
-      setEarnedPoints(savedOrder.points || cartPoints);
     }
 
     addOrderToQrSession({ table: tableNumber, accessMode, orderId: savedOrder.id });
@@ -441,6 +718,7 @@ function MenuPage() {
     setSubmittedOrder(savedOrder);
     setEditingOrderId(null);
     setCart([]);
+    setSelectedRewardId(null);
     setOrderComment('');
     setStep(CONFIRMATION_STEP);
   };
@@ -479,7 +757,8 @@ function MenuPage() {
 
     setEditingOrderId(order.id);
     setSubmittedOrder(order);
-    setCart(order.items || []);
+    setCart((order.items || []).filter((item) => !item.isRewardItem));
+    setSelectedRewardId(order.reward?.id || null);
     setOrderComment(order.comment || '');
     setBillRequestStatus('');
     setCartOpen(true);
@@ -496,7 +775,11 @@ function MenuPage() {
       table: tableNumber,
       orderId: targetOrder.id,
       clientName: targetOrder.clientName,
+      subtotal: targetOrder.subtotal || targetOrder.total,
       total: targetOrder.total,
+      reward: targetOrder.reward || null,
+      rewardNote: targetOrder.rewardNote || '',
+      discountAmount: targetOrder.discountAmount || 0,
       items: targetOrder.items,
       status: 'En attente',
       createdAt,
@@ -514,15 +797,49 @@ function MenuPage() {
     setBillRequestStatus('Le serveur associe a votre table a ete appele pour ramener l addition.');
   };
 
+  const handleRewardRedeem = async (reward) => {
+    setLoyaltyMessage('');
+    setLoyaltyError('');
+
+    if (!isClientAuthenticated) {
+      setLoyaltyError('Connecte-toi pour utiliser tes points.');
+      return;
+    }
+
+    if (!reward) return;
+
+    if (rewardsProfile.totalPoints < reward.pointsCost) {
+      setLoyaltyError(
+        `Encore ${reward.pointsCost - rewardsProfile.totalPoints} point(s) pour ${getRewardDisplayName(reward)}.`,
+      );
+      return;
+    }
+
+    const isSameRewardSelected = String(selectedRewardId) === String(reward.id);
+
+    setSelectedRewardId((currentRewardId) =>
+      String(currentRewardId) === String(reward.id) ? null : reward.id,
+    );
+    setLoyaltyMessage(
+      isSameRewardSelected
+        ? 'Recompense retiree du panier.'
+        : `${getRewardDisplayName(reward)} sera applique a cette commande.`,
+    );
+    setCartOpen(true);
+  };
+
   return (
     <main className="client-page">
-      <header className="client-header">
-        <div>
+      <header className={`client-header ${step === MENU_STEP && !isLinkExpired ? 'client-header-rich' : ''}`}>
+        <div className="client-header-copy">
           <p className="eyebrow">Commande client QR</p>
           <h1>Menu du restaurant</h1>
+          <p className="client-header-summary">
+            Commande digitale a table, suivi clair, validation rapide par le serveur.
+          </p>
           <div className="client-header-meta">
             <p className="table-label">Table numero {tableNumber}</p>
-            <p className="service-chip">Service rapide</p>
+            <p className="service-chip">{isClientAuthenticated ? 'Compte client' : 'Commande rapide'}</p>
           </div>
         </div>
       </header>
@@ -588,102 +905,204 @@ function MenuPage() {
 
       {step === AUTH_STEP && !isLinkExpired && (
         <section className="access-panel">
-          <ClientAuth initialMode={accessMode} onAuthenticated={handleClientAuthenticated} />
+          <ClientAuth
+            initialMode={accessMode}
+            onAuthenticated={handleClientAuthenticated}
+            onBackToMenu={returnFromAuthToMenu}
+          />
         </section>
       )}
 
       {step === MENU_STEP && !isLinkExpired && (
         <div className="menu-layout">
           <section className="menu-section">
-            <section className="client-auth-bar">
-              <div>
-                <p className="eyebrow">Recompenses premium</p>
-                {accessMode === 'direct' ? (
-                  <>
-                    <h2>Commande rapide, cadeaux possibles</h2>
-                    <p>
-                      Connecte-toi pour garder tes points et debloquer soda, glace ou menu gratuit.
-                    </p>
-                  </>
-                ) : (
-                  <>
-                    <h2>{clientName || 'Client fidele'}, tes points sont actifs</h2>
-                    <p>Chaque plat ajoute des points automatiquement a ton profil.</p>
-                  </>
-                )}
-              </div>
-              <div className="client-auth-actions" aria-label="Choix compte client">
-                <button
-                  className="hamburger-menu-button"
-                  type="button"
-                  aria-expanded={authMenuOpen}
-                  aria-label="Ouvrir le menu client"
-                  onClick={() => setAuthMenuOpen((isOpen) => !isOpen)}
-                >
-                  ☰
-                </button>
-                {authMenuOpen && (
-                  <div className="client-auth-menu">
-                    {isClientAuthenticated ? (
-                      <button type="button" onClick={logoutClient}>
-                        Deconnecter
+            <div className="client-overview-grid">
+              <section className="client-auth-bar">
+                <div className="client-auth-copy">
+                  <p className="eyebrow">Compte client</p>
+                  {accessMode === 'direct' ? (
+                    <>
+                      <h2>Commande rapide</h2>
+                      <p>Connecte-toi seulement si tu veux garder tes points et ton historique.</p>
+                    </>
+                  ) : (
+                    <>
+                      <h2>{clientName || 'Compte client'}, fidelite active</h2>
+                      <p>Les points sont ajoutes apres paiement uniquement.</p>
+                    </>
+                  )}
+                </div>
+                <div className="client-auth-actions" aria-label="Choix compte client">
+                  <button
+                    className="hamburger-menu-button"
+                    type="button"
+                    aria-expanded={authMenuOpen}
+                    aria-label="Ouvrir le menu client"
+                    onClick={() => setAuthMenuOpen((isOpen) => !isOpen)}
+                  >
+                    Menu
+                  </button>
+                  {authMenuOpen && (
+                    <div className="client-auth-menu">
+                      {isClientAuthenticated ? (
+                        <button type="button" onClick={logoutClient}>
+                          Deconnecter
+                        </button>
+                      ) : (
+                        <>
+                          <button type="button" onClick={() => continueToMenu('sign-up')}>
+                            S'inscrire
+                          </button>
+                          <button type="button" onClick={() => continueToMenu('sign-in')}>
+                            Se connecter
+                          </button>
+                          <button type="button" onClick={() => continueToMenu('direct')}>
+                            Commande rapide
+                          </button>
+                        </>
+                      )}
+                      <button
+                        className="view-order-button"
+                        disabled={!submittedOrder}
+                        type="button"
+                        onClick={viewSubmittedOrder}
+                      >
+                        Voir ma commande
                       </button>
+                    </div>
+                  )}
+                </div>
+              </section>
+
+              <section className="reward-strip">
+                <div className="reward-strip-header">
+                  <div className="reward-strip-copy">
+                    <p className="eyebrow">Programme fidelite</p>
+                    {accessMode === 'direct' ? (
+                      <>
+                        <h2>Cumule tes points</h2>
+                        <p>
+                          Gagne 1 point chaque 10 MAD payes. Connecte-toi pour garder tes
+                          points et debloquer tes recompenses.
+                        </p>
+                      </>
                     ) : (
                       <>
-                        <button type="button" onClick={() => continueToMenu('sign-up')}>
-                          S'inscrire
-                        </button>
-                        <button type="button" onClick={() => continueToMenu('sign-in')}>
-                          Se connecter
-                        </button>
-                        <button type="button" onClick={() => continueToMenu('direct')}>
-                          Commande rapide
-                        </button>
+                        <h2>Fidelite active</h2>
+                        <p>
+                          {nextReward
+                            ? `${rewardsProfile.totalPoints} pts disponibles. Prochaine recompense : ${nextReward.name} a ${nextReward.pointsCost} pts.`
+                            : `${rewardsProfile.totalPoints} pts disponibles. Cette commande peut ajouter environ ${cartPoints} point(s) apres paiement.`}
+                        </p>
                       </>
                     )}
-                    <button
-                      className="view-order-button"
-                      disabled={!submittedOrder}
-                      type="button"
-                      onClick={viewSubmittedOrder}
-                    >
-                      Voir ma commande
+                  </div>
+                  {accessMode === 'direct' && (
+                    <button type="button" onClick={startRewards}>
+                      Se connecter
                     </button>
+                  )}
+                </div>
+                {selectedReward && accessMode !== 'direct' && (
+                  <p className="reward-strip-selection">
+                    Recompense choisie : {selectedReward.type === 'DISCOUNT'
+                      ? `${selectedReward.name} - ${getRewardDiscountPercent(selectedReward)}%`
+                      : `${getRewardDisplayName(selectedReward)} offert`}
+                  </p>
+                )}
+                {accessMode === 'direct' ? (
+                  <div className="reward-strip-metrics reward-strip-metrics-guest">
+                    <article className="reward-stat-card">
+                      <span>Cette commande</span>
+                      <strong>{cartPoints} pts</strong>
+                    </article>
+                    <article className="reward-stat-card">
+                      <span>Principe</span>
+                      <strong>1 pt / 10 MAD</strong>
+                    </article>
+                  </div>
+                ) : (
+                  <div className="reward-strip-metrics">
+                    <article className="reward-stat-card">
+                      <span>Solde</span>
+                      <strong>{rewardsProfile.totalPoints} pts</strong>
+                    </article>
+                    <article className="reward-stat-card">
+                      <span>Cette commande</span>
+                      <strong>{cartPoints} pts</strong>
+                    </article>
+                    <div className="reward-progress-card">
+                      <span>Prochaine recompense</span>
+                      <strong>{nextReward ? nextReward.name : 'Toutes debloquees'}</strong>
+                      <div className="reward-meter" aria-label="Progression recompense">
+                        <span style={{ width: `${rewardProgress}%` }} />
+                      </div>
+                    </div>
                   </div>
                 )}
-              </div>
-            </section>
+              </section>
+            </div>
 
-            <section className="reward-strip">
-              <div>
-                <p className="eyebrow">Programme fidelite</p>
-                {accessMode === 'direct' ? (
-                  <>
-                    <h2>Connecte-toi pour commencer les recompenses</h2>
-                    <p>
-                      Cette commande peut rapporter {cartPoints} point(s). Les points sont gardes
-                      seulement avec un compte client.
-                    </p>
-                  </>
-                ) : (
-                  <>
-                    <h2>{rewardsProfile.totalPoints} points disponibles</h2>
-                    <p>
-                      Prochaine recompense : {nextReward.title} a {nextReward.points} points.
-                    </p>
-                  </>
-                )}
-              </div>
-              {accessMode === 'direct' ? (
-                <button type="button" onClick={startRewards}>
-                  Sign in pour les points
-                </button>
-              ) : (
-                <div className="reward-meter" aria-label="Progression recompense">
-                  <span style={{ width: `${rewardProgress}%` }} />
+            {isClientAuthenticated &&
+              ((rewardsProfile.rewards || []).length > 0 || loyaltyMessage || loyaltyError) && (
+              <section className="client-loyalty-panel">
+                <div className="section-heading compact-section-heading">
+                  <h2>Utiliser mes points</h2>
+                  <p>Choisis une recompense et elle sera appliquee directement au panier.</p>
                 </div>
-              )}
-            </section>
+
+                {(loyaltyMessage || loyaltyError) && (
+                  <p className={loyaltyError ? 'auth-error' : 'auth-message'}>
+                    {loyaltyError || loyaltyMessage}
+                  </p>
+                )}
+
+                <div className="client-reward-grid">
+                  {(rewardsProfile.rewards || []).map((reward) => {
+                    const canRedeem = rewardsProfile.totalPoints >= reward.pointsCost;
+                    const missingPoints = Math.max(0, reward.pointsCost - rewardsProfile.totalPoints);
+                    const isSelected = String(selectedRewardId) === String(reward.id);
+
+                    return (
+                      <article
+                        className={`client-reward-card ${isSelected ? 'client-reward-card-active' : ''}`}
+                        key={reward.id}
+                      >
+                        <div className="client-reward-card-copy">
+                          <span className="client-reward-type">
+                            {reward.type === 'DISCOUNT' ? 'Reduction' : 'Article offert'}
+                          </span>
+                          <strong>{reward.type === 'FREE_ITEM' ? getRewardDisplayName(reward) : reward.name}</strong>
+                          <p>{reward.description}</p>
+                          <span className="client-reward-hint">
+                            {reward.type === 'DISCOUNT'
+                              ? `Le total baisse de ${getRewardDiscountPercent(reward)}%.`
+                              : `${getRewardDisplayName(reward)} sera ajoute au panier a 0 MAD.`}
+                          </span>
+                        </div>
+                        <div className="client-reward-footer">
+                          <div className="client-reward-meta">
+                            <span>{reward.pointsCost} pts</span>
+                            {!canRedeem && <small>Encore {missingPoints} pts</small>}
+                          </div>
+                          <button
+                            className={`primary-button ${isSelected ? 'reward-selected-button' : ''}`}
+                            type="button"
+                            onClick={() => handleRewardRedeem(reward)}
+                          >
+                            {redeemingRewardId === reward.id
+                              ? 'Application...'
+                              : isSelected
+                                ? 'Retirer'
+                                : 'Utiliser'}
+                          </button>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+              </section>
+            )}
 
             <div className="menu-hero">
               <div
@@ -691,19 +1110,23 @@ function MenuPage() {
                 style={{ backgroundImage: `url(${selectedProduct.image})` }}
                 aria-hidden="true"
               />
-              <div>
+              <div className="menu-hero-content">
                 <p className="eyebrow">Selection du moment</p>
-                <h2>{selectedProduct.name}</h2>
-                <p>{selectedProduct.description}</p>
-                <div className="hero-stats">
-                  <span>⏱ {selectedProduct.prepTime}</span>
-                  <span>🎁 {selectedProduct.points} pts</span>
-                  <span className="price-badge">💰 {formatPrice(selectedProduct.price)}</span>
+                <div className="menu-hero-copy">
+                  <h2>{selectedProduct.name}</h2>
+                  <p>{selectedProduct.description}</p>
+                </div>
+                <div className="menu-hero-footer">
+                  <div className="hero-stats">
+                    <span>{selectedProduct.prepTime}</span>
+                    <span>{getEstimatedProductPoints(selectedProduct.price)} pts</span>
+                    <span className="price-badge">{formatPrice(selectedProduct.price)}</span>
+                  </div>
+                  <button type="button" onClick={() => addToCart(selectedProduct)}>
+                    Ajouter au panier
+                  </button>
                 </div>
               </div>
-              <button type="button" onClick={() => addToCart(selectedProduct)}>
-                Ajouter cette suggestion
-              </button>
             </div>
 
             {accessMode !== 'direct' && (
@@ -756,8 +1179,8 @@ function MenuPage() {
                     <h3>{product.name}</h3>
                     <p>{product.description}</p>
                     <div className="product-details">
-                      <span>⏱ {product.prepTime}</span>
-                      <span>🎁 {product.points} pts</span>
+                      <span>{product.prepTime}</span>
+                      <span>{getEstimatedProductPoints(product.price)} pts</span>
                     </div>
                     <small>{product.details}</small>
                   </div>
@@ -806,34 +1229,44 @@ function MenuPage() {
               <span>Points de cette commande</span>
               <strong>{cartPoints} pts</strong>
             </div>
-            {cart.length === 0 && <p className="muted">Aucun produit ajoute.</p>}
+            {selectedReward && (
+              <div className="cart-reward-banner">
+                <strong>Recompense appliquee</strong>
+                <span>{getRewardNote(selectedReward)}</span>
+              </div>
+            )}
+            {cart.length === 0 && !rewardPreviewItem && <p className="muted">Aucun produit ajoute.</p>}
 
             <div className="cart-items">
-              {cart.map((item) => (
-                <div className="cart-item" key={item.id}>
+              {cartDisplayItems.map((item) => (
+                <div className={`cart-item ${item.isRewardItem ? 'cart-item-reward' : ''}`} key={`${item.id}-${item.quantity}`}>
                   <div>
                     <strong>{item.name}</strong>
                     <span>
                       {item.quantity} x {formatPrice(item.price)}
                     </span>
                   </div>
-                  <div className="cart-quantity-actions" aria-label={`Quantite ${item.name}`}>
-                    <button
-                      type="button"
-                      aria-label={`Retirer ${item.name}`}
-                      onClick={() => removeOneFromCart(item.id)}
-                    >
-                      -
-                    </button>
-                    <strong>{item.quantity}</strong>
-                    <button
-                      type="button"
-                      aria-label={`Ajouter ${item.name}`}
-                      onClick={() => addToCart(item)}
-                    >
-                      +
-                    </button>
-                  </div>
+                  {item.isRewardItem ? (
+                    <strong className="cart-item-tag">Gratuit</strong>
+                  ) : (
+                    <div className="cart-quantity-actions" aria-label={`Quantite ${item.name}`}>
+                      <button
+                        type="button"
+                        aria-label={`Retirer ${item.name}`}
+                        onClick={() => removeOneFromCart(item.id)}
+                      >
+                        -
+                      </button>
+                      <strong>{item.quantity}</strong>
+                      <button
+                        type="button"
+                        aria-label={`Ajouter ${item.name}`}
+                        onClick={() => addToCart(item)}
+                      >
+                        +
+                      </button>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -847,8 +1280,20 @@ function MenuPage() {
               />
             </label>
 
+            {selectedReward?.type === 'DISCOUNT' && (
+              <>
+                <div className="total-row total-row-muted">
+                  <span>Sous-total</span>
+                  <strong>{formatPrice(subtotal)}</strong>
+                </div>
+                <div className="total-row total-row-discount">
+                  <span>{selectedReward.name}</span>
+                  <strong>-{formatPrice(rewardDiscountAmount)}</strong>
+                </div>
+              </>
+            )}
             <div className="total-row">
-              <span>Total</span>
+              <span>Total a payer</span>
               <strong>{formatPrice(total)}</strong>
             </div>
 
@@ -921,10 +1366,9 @@ function MenuPage() {
             </div>
           ) : (
             <div className="reward-callout success">
-              <strong>+{earnedPoints} points ajoutes</strong>
+              <strong>Points credites apres paiement</strong>
               <span>
-                Tu as maintenant {rewardsProfile.totalPoints} points et {rewardsProfile.orderCount}{' '}
-                commande(s) dans ton profil fidelite.
+                Cette commande peut rapporter environ {submittedOrder.points} point(s) si elle est payee.
               </span>
             </div>
           )}
@@ -951,9 +1395,9 @@ function MenuPage() {
               <h2>{detailProduct.name}</h2>
               <p>{detailProduct.description}</p>
               <div className="hero-stats">
-                <span>⏱ {detailProduct.prepTime}</span>
-                <span>🎁 {detailProduct.points} pts</span>
-                <span className="price-badge">💰 {formatPrice(detailProduct.price)}</span>
+                <span>{detailProduct.prepTime}</span>
+                <span>{getEstimatedProductPoints(detailProduct.price)} pts</span>
+                <span className="price-badge">{formatPrice(detailProduct.price)}</span>
               </div>
               <div className="detail-info-grid">
                 <div>
@@ -966,7 +1410,9 @@ function MenuPage() {
                 </div>
                 <div>
                   <strong>Recompenses</strong>
-                  <span>Ce plat ajoute {detailProduct.points} point(s) a un compte client.</span>
+                  <span>
+                    Cette commande rapporte environ {getEstimatedProductPoints(detailProduct.price)} point(s) apres paiement.
+                  </span>
                 </div>
               </div>
               <button
@@ -995,7 +1441,7 @@ function ClientOrdersPanel({
   onEditOrder,
   billRequestStatus,
 }) {
-  const historyOrders = profile.orderHistory || [];
+  const historyOrders = profile.transactions || [];
   const hasActiveOrders = orders.length > 0;
   const hasHistory = historyOrders.length > 0;
 
@@ -1028,6 +1474,7 @@ function ClientOrdersPanel({
                   </li>
                 ))}
               </ul>
+              {order.rewardNote && <p className="client-order-note">{order.rewardNote}</p>}
               <div className="total-row compact-total">
                 <span>Total</span>
                 <strong>{formatPrice(order.total)}</strong>
@@ -1061,10 +1508,9 @@ function ClientOrdersPanel({
 
       {hasHistory && (
         <div className="history-mini">
-          <strong>Historique du compte</strong>
+          <strong>Historique fidelite</strong>
           <span>
-            {historyOrders.length} commande(s) sauvegardee(s), {profile.totalPoints} points au
-            total.
+            {historyOrders.length} mouvement(s) et {profile.totalPoints} points disponibles.
           </span>
         </div>
       )}

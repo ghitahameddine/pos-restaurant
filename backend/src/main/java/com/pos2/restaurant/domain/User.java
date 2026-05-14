@@ -36,6 +36,11 @@ public class User {
     @Column(nullable = false)
     private int points = 0;
 
+    private Boolean active = true;
+
+    @Column(length = 255)
+    private String assignedTables;
+
     @Column(nullable = false)
     private Instant createdAt;
 
@@ -58,6 +63,10 @@ public class User {
         return phone;
     }
 
+    public void setPhone(String phone) {
+        this.phone = phone;
+    }
+
     public String getPasswordHash() {
         return passwordHash;
     }
@@ -70,8 +79,16 @@ public class User {
         return name;
     }
 
+    public void setName(String name) {
+        this.name = name;
+    }
+
     public UserRole getRole() {
         return role;
+    }
+
+    public void setRole(UserRole role) {
+        this.role = role;
     }
 
     public int getPoints() {
@@ -86,6 +103,28 @@ public class User {
         if (earnedPoints > 0) {
             this.points += earnedPoints;
         }
+    }
+
+    public void removePoints(int redeemedPoints) {
+        if (redeemedPoints > 0) {
+            this.points = Math.max(0, this.points - redeemedPoints);
+        }
+    }
+
+    public boolean isActive() {
+        return active == null || active;
+    }
+
+    public void setActive(boolean active) {
+        this.active = active;
+    }
+
+    public String getAssignedTables() {
+        return assignedTables;
+    }
+
+    public void setAssignedTables(String assignedTables) {
+        this.assignedTables = assignedTables;
     }
 
     public Instant getCreatedAt() {
