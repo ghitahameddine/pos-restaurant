@@ -19,6 +19,413 @@
   font-family: Inter, sans-serif;
 }
 
+/* KDS professionnel - cuisine */
+.kds-page {
+  background: #f0e7cf;
+  min-height: 100vh;
+}
+
+.kds-header {
+  border: 1px solid rgba(62, 39, 35, 0.12);
+  box-shadow: 0 18px 45px rgba(62, 39, 35, 0.08);
+}
+
+.kds-header .kitchen-header-copy h1 {
+  font-size: clamp(2.8rem, 5vw, 5.5rem);
+  line-height: 0.95;
+}
+
+.kds-summary .kitchen-summary-card {
+  min-height: 104px;
+}
+
+.kds-summary .kitchen-summary-card strong {
+  font-size: 2rem;
+}
+
+.kds-board-shell {
+  padding: 18px;
+}
+
+.kds-kanban-board {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(280px, 1fr));
+  gap: 18px;
+  align-items: stretch;
+}
+
+.kds-page .kds-kanban-board:has(.kds-kanban-column:nth-child(2):last-child) {
+  grid-template-columns: repeat(2, minmax(320px, 1fr));
+}
+
+.kds-kanban-column {
+  background: rgba(255, 252, 244, 0.84);
+  border: 1px solid rgba(62, 39, 35, 0.14);
+  border-radius: 22px;
+  min-height: 58vh;
+  padding: 14px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+}
+
+.kds-column-header {
+  align-items: center;
+  border-bottom: 2px solid rgba(62, 39, 35, 0.1);
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 14px;
+  padding: 6px 4px 14px;
+}
+
+.kds-column-header strong {
+  color: #2f1c18;
+  display: block;
+  font-family: Inter, sans-serif;
+  font-size: 1.35rem;
+  line-height: 1;
+}
+
+.kds-column-header span {
+  color: rgba(47, 28, 24, 0.62);
+  display: block;
+  font-size: 0.9rem;
+  margin-top: 5px;
+}
+
+.kds-column-header b {
+  align-items: center;
+  background: #3e2723;
+  border-radius: 999px;
+  color: #fff8e7;
+  display: inline-flex;
+  font-size: 1rem;
+  height: 38px;
+  justify-content: center;
+  min-width: 38px;
+  padding: 0 12px;
+}
+
+.kds-column-stack {
+  display: grid;
+  gap: 14px;
+}
+
+.kds-empty-column {
+  border: 1px dashed rgba(62, 39, 35, 0.18);
+  border-radius: 16px;
+  color: rgba(62, 39, 35, 0.55);
+  font-family: Inter, sans-serif;
+  margin: 0;
+  padding: 22px;
+  text-align: center;
+}
+
+.kds-ticket-card {
+  background: #fffaf0;
+  border: 2px solid rgba(62, 39, 35, 0.12);
+  border-radius: 20px;
+  box-shadow: 0 18px 38px rgba(62, 39, 35, 0.12);
+  display: grid;
+  grid-template-columns: 118px 1fr;
+  min-height: 260px;
+  overflow: hidden;
+}
+
+.kds-ticket-card.kds-status-in_progress {
+  border-color: rgba(184, 144, 57, 0.75);
+  box-shadow: 0 20px 46px rgba(184, 144, 57, 0.24);
+}
+
+.kds-ticket-card.kds-status-done {
+  border-color: rgba(32, 127, 92, 0.45);
+}
+
+.kds-slot-hero {
+  align-items: center;
+  color: #fffdf5;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-height: 100%;
+  padding: 14px 10px;
+  text-align: center;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.22);
+}
+
+.kds-slot-hero span {
+  font-family: Inter, sans-serif;
+  font-size: 0.78rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.kds-slot-hero strong {
+  font-family: Poppins, sans-serif;
+  font-size: 2.35rem;
+  line-height: 1;
+  margin: 14px 0 8px;
+}
+
+.kds-slot-hero small {
+  font-family: Inter, sans-serif;
+  font-size: 0.92rem;
+  font-weight: 800;
+}
+
+.kds-ticket-main {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+}
+
+.kds-ticket-head {
+  align-items: flex-start;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.kds-ticket-head span,
+.kds-order-line span,
+.kds-comment span {
+  color: rgba(47, 28, 24, 0.58);
+  display: block;
+  font-family: Inter, sans-serif;
+  font-size: 0.82rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.kds-ticket-head strong {
+  color: #2f1c18;
+  display: block;
+  font-family: Poppins, sans-serif;
+  font-size: 3rem;
+  line-height: 0.9;
+}
+
+.kds-timer {
+  border-radius: 16px;
+  min-width: 108px;
+  padding: 10px 12px;
+  text-align: right;
+}
+
+.kds-timer span {
+  color: inherit;
+  font-size: 0.72rem;
+  opacity: 0.86;
+}
+
+.kds-timer strong {
+  font-size: 1.35rem;
+  line-height: 1.05;
+}
+
+.kds-timer.tone-fresh {
+  background: rgba(32, 127, 92, 0.12);
+  color: #166747;
+}
+
+.kds-timer.tone-watch {
+  background: rgba(248, 155, 52, 0.18);
+  color: #9b570e;
+}
+
+.kds-timer.tone-alert {
+  background: rgba(187, 70, 57, 0.16);
+  color: #9f2f25;
+}
+
+.kds-order-line {
+  align-items: center;
+  border-top: 1px solid rgba(62, 39, 35, 0.1);
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  padding-top: 10px;
+}
+
+.kds-state-badge {
+  border-radius: 999px;
+  font-family: Inter, sans-serif;
+  font-size: 0.78rem;
+  font-weight: 900;
+  padding: 8px 10px;
+  white-space: nowrap;
+}
+
+.kds-state-badge.status-waiting {
+  background: rgba(62, 39, 35, 0.08);
+  color: #3e2723;
+}
+
+.kds-state-badge.status-in_progress {
+  background: rgba(184, 144, 57, 0.18);
+  color: #8b6416;
+}
+
+.kds-state-badge.status-done {
+  background: rgba(32, 127, 92, 0.14);
+  color: #166747;
+}
+
+.kds-progress-strip {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.kds-progress-chip {
+  background: rgba(62, 39, 35, 0.06);
+  border: 1px solid rgba(62, 39, 35, 0.1);
+  border-radius: 12px;
+  padding: 8px;
+}
+
+.kds-progress-chip span {
+  color: rgba(47, 28, 24, 0.62);
+  display: block;
+  font-family: Inter, sans-serif;
+  font-size: 0.68rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.kds-progress-chip strong {
+  color: #2f1c18;
+  display: block;
+  font-size: 0.9rem;
+  line-height: 1.1;
+  margin-top: 3px;
+}
+
+.kds-progress-chip.progress-done {
+  background: rgba(32, 127, 92, 0.12);
+  border-color: rgba(32, 127, 92, 0.24);
+}
+
+.kds-progress-chip.progress-in_progress {
+  background: rgba(184, 144, 57, 0.16);
+  border-color: rgba(184, 144, 57, 0.28);
+}
+
+.kds-progress-chip.not-required {
+  opacity: 0.55;
+}
+
+.kds-items-list {
+  display: grid;
+  gap: 8px;
+}
+
+.kds-item-row {
+  align-items: center;
+  background: #f5ead2;
+  border-radius: 13px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: auto 1fr auto;
+  padding: 11px 12px;
+}
+
+.kds-item-row span {
+  color: #b89039;
+  font-family: Inter, sans-serif;
+  font-size: 1.05rem;
+  font-weight: 950;
+}
+
+.kds-item-row strong {
+  color: #2f1c18;
+  font-family: Poppins, sans-serif;
+  font-size: 1.12rem;
+  line-height: 1.12;
+}
+
+.kds-item-row b {
+  background: #fff8e7;
+  border-radius: 999px;
+  color: #166747;
+  font-size: 0.76rem;
+  padding: 6px 8px;
+}
+
+.kds-comment {
+  background: rgba(187, 70, 57, 0.09);
+  border: 1px solid rgba(187, 70, 57, 0.16);
+  border-radius: 14px;
+  padding: 10px 12px;
+}
+
+.kds-comment strong {
+  color: #2f1c18;
+  display: block;
+  font-family: Inter, sans-serif;
+  font-size: 0.98rem;
+  margin-top: 4px;
+}
+
+.kds-primary-action {
+  background: #3e2723;
+  border: 0;
+  border-radius: 15px;
+  color: #fff8e7;
+  cursor: pointer;
+  font-family: Poppins, sans-serif;
+  font-size: 1rem;
+  font-weight: 900;
+  margin-top: auto;
+  min-height: 58px;
+  padding: 14px 18px;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.kds-primary-action.action-ready {
+  background: #b89039;
+  color: #2f1c18;
+}
+
+.kds-primary-action:hover:not(:disabled) {
+  box-shadow: 0 14px 26px rgba(62, 39, 35, 0.18);
+  transform: translateY(-1px);
+}
+
+.kds-primary-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+@media (max-width: 1180px) {
+  .kds-kanban-board,
+  .kds-page .kds-kanban-board:has(.kds-kanban-column:nth-child(2):last-child) {
+    grid-template-columns: 1fr;
+  }
+
+  .kds-kanban-column {
+    min-height: auto;
+  }
+}
+
+@media (max-width: 760px) {
+  .kds-ticket-card {
+    grid-template-columns: 92px 1fr;
+  }
+
+  .kds-slot-hero strong {
+    font-size: 1.65rem;
+  }
+
+  .kds-ticket-head strong {
+    font-size: 2.2rem;
+  }
+
+  .kds-progress-strip {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* Admin back-office */
 .admin-login-page,
 .admin-shell {
@@ -11910,6 +12317,715 @@ body {
 
   .kitchen-board-heading p {
     max-width: none;
+    text-align: left;
+  }
+}
+
+/* KDS professionnel - cuisine tablette */
+.kds-page {
+  background:
+    radial-gradient(circle at top left, rgba(184, 144, 57, 0.16), transparent 32%),
+    #f1eadb;
+  color: #2f1d18;
+  min-height: 100vh;
+}
+
+.kds-page .kitchen-shell {
+  max-width: 1740px;
+  padding: 28px;
+}
+
+.kds-header {
+  align-items: center;
+  background: #fffaf0;
+  border: 1px solid rgba(62, 39, 35, 0.1);
+  border-radius: 26px;
+  box-shadow: 0 20px 48px rgba(62, 39, 35, 0.08);
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 18px;
+  padding: 28px;
+}
+
+.kds-header h1 {
+  color: #2f1d18;
+  font-family: Poppins, Inter, sans-serif;
+  font-size: clamp(42px, 5vw, 72px);
+  line-height: 0.95;
+  margin: 6px 0 8px;
+}
+
+.kds-header p,
+.kds-header span {
+  color: #725f55;
+  font-family: Inter, sans-serif;
+}
+
+.kds-screen-switch {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
+  max-width: 620px;
+}
+
+.kds-screen-switch button {
+  background: #fffaf0;
+  border: 1px solid rgba(62, 39, 35, 0.14);
+  border-radius: 999px;
+  color: #3e2723;
+  cursor: pointer;
+  font-family: Inter, sans-serif;
+  font-size: 15px;
+  font-weight: 800;
+  min-height: 48px;
+  padding: 0 20px;
+}
+
+.kds-screen-switch button:hover {
+  border-color: #bd9330;
+  color: #bd9330;
+}
+
+.kds-screen-switch button.active {
+  background: #3e2723;
+  border-color: #3e2723;
+  color: #fffaf0;
+}
+
+.kds-summary,
+.kds-board-shell,
+.kds-error,
+.kds-empty-board {
+  background: rgba(255, 250, 240, 0.9);
+  border: 1px solid rgba(62, 39, 35, 0.1);
+  border-radius: 26px;
+  box-shadow: 0 20px 48px rgba(62, 39, 35, 0.06);
+}
+
+.kds-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+  margin-bottom: 18px;
+  padding: 18px;
+}
+
+.kds-summary-card {
+  background: #fffaf0;
+  border: 1px solid rgba(62, 39, 35, 0.1);
+  border-radius: 20px;
+  min-height: 108px;
+  padding: 18px;
+}
+
+.kds-summary-card.active {
+  background: #f6e4ad;
+  border-color: rgba(189, 147, 48, 0.38);
+}
+
+.kds-summary-card span {
+  color: #725f55;
+  display: block;
+  font-family: Inter, sans-serif;
+  font-size: 13px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.kds-summary-card strong {
+  color: #2f1d18;
+  display: block;
+  font-family: Poppins, Inter, sans-serif;
+  font-size: 30px;
+  margin-top: 14px;
+}
+
+.kds-error {
+  color: #9f2f25;
+  font-family: Inter, sans-serif;
+  font-weight: 800;
+  margin-bottom: 18px;
+  padding: 18px 22px;
+}
+
+.kds-board-shell {
+  padding: 18px;
+}
+
+.kds-kanban-board {
+  align-items: start;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  gap: 18px;
+}
+
+.kds-kanban-column {
+  background: #fbf5e8;
+  border: 1px solid rgba(62, 39, 35, 0.1);
+  border-radius: 24px;
+  min-height: 62vh;
+  padding: 16px;
+}
+
+.kds-column-header {
+  align-items: center;
+  border-bottom: 1px solid rgba(62, 39, 35, 0.1);
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding-bottom: 14px;
+}
+
+.kds-column-header h2 {
+  color: #2f1d18;
+  font-family: Poppins, Inter, sans-serif;
+  font-size: 28px;
+  margin: 0;
+}
+
+.kds-column-header p {
+  color: #725f55;
+  font-family: Inter, sans-serif;
+  font-size: 15px;
+  margin: 3px 0 0;
+}
+
+.kds-column-header strong {
+  align-items: center;
+  background: #fffaf0;
+  border: 1px solid rgba(189, 147, 48, 0.35);
+  border-radius: 999px;
+  color: #2f1d18;
+  display: inline-flex;
+  font-family: Poppins, Inter, sans-serif;
+  font-size: 22px;
+  height: 52px;
+  justify-content: center;
+  min-width: 52px;
+}
+
+.kds-column-stack {
+  display: grid;
+  gap: 16px;
+}
+
+.kds-empty-column {
+  background: rgba(255, 250, 240, 0.76);
+  border: 1px dashed rgba(62, 39, 35, 0.18);
+  border-radius: 18px;
+  color: #725f55;
+  font-family: Inter, sans-serif;
+  font-size: 17px;
+  font-weight: 700;
+  padding: 26px;
+  text-align: center;
+}
+
+.kds-ticket-card {
+  background: #fffaf0;
+  border: 2px solid rgba(62, 39, 35, 0.12);
+  border-radius: 22px;
+  box-shadow: 0 18px 38px rgba(62, 39, 35, 0.08);
+  display: grid;
+  grid-template-columns: 126px minmax(0, 1fr);
+  min-height: 330px;
+  overflow: hidden;
+}
+
+.kds-ticket-card.kds-status-in_progress {
+  border-color: rgba(189, 147, 48, 0.7);
+  box-shadow: 0 20px 44px rgba(189, 147, 48, 0.17);
+}
+
+.kds-ticket-card.kds-status-done {
+  border-color: rgba(31, 128, 91, 0.55);
+}
+
+.kds-manager-card {
+  grid-template-columns: 140px minmax(0, 1fr);
+}
+
+.kds-slot-hero {
+  align-items: center;
+  color: #ffffff;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  justify-content: center;
+  min-height: 100%;
+  padding: 18px 12px;
+  text-align: center;
+  text-shadow: 0 1px 10px rgba(0, 0, 0, 0.28);
+}
+
+.kds-slot-hero span {
+  font-family: Inter, sans-serif;
+  font-size: 12px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.kds-slot-hero strong {
+  font-family: Poppins, Inter, sans-serif;
+  font-size: clamp(34px, 4vw, 58px);
+  line-height: 0.95;
+}
+
+.kds-slot-hero small {
+  font-family: Inter, sans-serif;
+  font-size: 14px;
+  font-weight: 900;
+}
+
+.kds-ticket-main {
+  display: grid;
+  gap: 16px;
+  padding: 20px;
+}
+
+.kds-ticket-head {
+  align-items: start;
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.kds-ticket-head span,
+.kds-order-line span {
+  color: #725f55;
+  display: block;
+  font-family: Inter, sans-serif;
+  font-size: 13px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.kds-ticket-head strong {
+  color: #2f1d18;
+  display: block;
+  font-family: Poppins, Inter, sans-serif;
+  font-size: 46px;
+  line-height: 0.95;
+}
+
+.kds-order-line {
+  color: #725f55;
+  font-family: Inter, sans-serif;
+  font-size: 15px;
+}
+
+.kds-timer {
+  border: 1px solid transparent;
+  border-radius: 18px;
+  font-family: Inter, sans-serif;
+  min-width: 122px;
+  padding: 12px 14px;
+  text-align: center;
+}
+
+.kds-timer span {
+  display: block;
+  font-size: 12px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.kds-timer strong {
+  display: block;
+  font-size: 25px;
+  line-height: 1.1;
+}
+
+.kds-timer.tone-fresh {
+  background: #e8f6ed;
+  border-color: #b5dec4;
+  color: #17693e;
+}
+
+.kds-timer.tone-watch {
+  background: #fff0cc;
+  border-color: #e7bd63;
+  color: #925b06;
+}
+
+.kds-timer.tone-alert {
+  background: #ffe0da;
+  border-color: #e47668;
+  color: #a93325;
+}
+
+.kds-state-badge {
+  align-items: center;
+  border-radius: 999px;
+  display: inline-flex;
+  font-family: Inter, sans-serif;
+  font-size: 14px;
+  font-weight: 900;
+  justify-content: center;
+  min-height: 34px;
+  padding: 0 14px;
+  width: fit-content;
+}
+
+.kds-state-badge.status-waiting {
+  background: #f3ead7;
+  color: #6e594e;
+}
+
+.kds-state-badge.status-in_progress {
+  background: #fff0cc;
+  color: #925b06;
+}
+
+.kds-state-badge.status-done {
+  background: #e8f6ed;
+  color: #17693e;
+}
+
+.kds-progress-strip {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.kds-progress-chip {
+  background: #f5efe2;
+  border: 1px solid rgba(62, 39, 35, 0.1);
+  border-radius: 16px;
+  color: #725f55;
+  font-family: Inter, sans-serif;
+  padding: 10px;
+}
+
+.kds-progress-chip span {
+  display: block;
+  font-size: 12px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.kds-progress-chip strong {
+  display: block;
+  font-size: 15px;
+  margin-top: 4px;
+}
+
+.kds-progress-chip.progress-done {
+  background: #e8f6ed;
+  border-color: #b5dec4;
+  color: #17693e;
+}
+
+.kds-progress-chip.progress-in_progress {
+  background: #fff0cc;
+  border-color: #e7bd63;
+  color: #925b06;
+}
+
+.kds-progress-chip.progress-waiting {
+  background: #f5efe2;
+}
+
+.kds-progress-chip.not-required {
+  opacity: 0.62;
+}
+
+.kds-items-list {
+  display: grid;
+  gap: 8px;
+}
+
+.kds-item-row {
+  align-items: center;
+  background: #fbf5e8;
+  border: 1px solid rgba(62, 39, 35, 0.1);
+  border-radius: 16px;
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr);
+  gap: 12px;
+  min-height: 56px;
+  padding: 10px 14px;
+}
+
+.kds-item-row strong {
+  color: #2f1d18;
+  font-family: Poppins, Inter, sans-serif;
+  font-size: 24px;
+  text-align: center;
+}
+
+.kds-item-row span {
+  color: #2f1d18;
+  font-family: Inter, sans-serif;
+  font-size: 20px;
+  font-weight: 800;
+  text-transform: none;
+}
+
+.kds-comment {
+  background: #fff3d8;
+  border: 1px solid rgba(189, 147, 48, 0.24);
+  border-radius: 16px;
+  color: #5c463a;
+  font-family: Inter, sans-serif;
+  font-size: 16px;
+  padding: 14px;
+}
+
+.kds-comment strong {
+  color: #2f1d18;
+  display: block;
+  font-size: 13px;
+  margin-bottom: 4px;
+  text-transform: uppercase;
+}
+
+.kds-primary-action {
+  background: #3e2723;
+  border: 0;
+  border-radius: 18px;
+  color: #fffaf0;
+  cursor: pointer;
+  font-family: Poppins, Inter, sans-serif;
+  font-size: 19px;
+  font-weight: 900;
+  min-height: 62px;
+  padding: 0 22px;
+  width: 100%;
+}
+
+.kds-primary-action:hover {
+  background: #51342e;
+}
+
+.kds-primary-action.action-ready {
+  background: #1f805b;
+}
+
+.kds-primary-action.action-ready:hover {
+  background: #176947;
+}
+
+.kds-primary-action:disabled {
+  background: #d8d1c3;
+  color: #7a6f65;
+  cursor: not-allowed;
+}
+
+.kds-empty-board {
+  color: #725f55;
+  font-family: Inter, sans-serif;
+  margin-top: 18px;
+  padding: 28px;
+}
+
+.kds-empty-board h2 {
+  color: #2f1d18;
+  font-family: Poppins, Inter, sans-serif;
+  font-size: 30px;
+  margin: 0 0 8px;
+}
+
+@media (max-width: 1200px) {
+  .kds-page .kitchen-shell {
+    padding: 18px;
+  }
+
+  .kds-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .kds-screen-switch {
+    justify-content: flex-start;
+  }
+
+  .kds-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .kds-page .kitchen-shell {
+    padding: 10px;
+  }
+
+  .kds-header,
+  .kds-summary,
+  .kds-board-shell {
+    border-radius: 20px;
+  }
+
+  .kds-header {
+    padding: 20px;
+  }
+
+  .kds-header h1 {
+    font-size: 42px;
+  }
+
+  .kds-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .kds-kanban-board {
+    grid-template-columns: 1fr;
+  }
+
+  .kds-kanban-column {
+    min-height: auto;
+  }
+
+  .kds-ticket-card,
+  .kds-manager-card {
+    grid-template-columns: 1fr;
+  }
+
+  .kds-slot-hero {
+    min-height: 130px;
+  }
+
+  .kds-progress-strip {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Ajustements KDS + serveur pickup */
+.kds-slot-hero {
+  overflow: hidden;
+}
+
+.kds-slot-hero strong {
+  font-size: clamp(30px, 3.3vw, 48px);
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.kds-slot-hero small {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.server-tablet-page .server-ready-pickup-card {
+  border-color: color-mix(in srgb, var(--slot-accent) 58%, #ffffff) !important;
+  box-shadow: 0 18px 42px rgba(62, 39, 35, 0.08) !important;
+  position: relative;
+}
+
+.server-tablet-page .server-ready-pickup-card::before {
+  background: var(--slot-accent);
+  border-radius: 999px;
+  content: "";
+  height: calc(100% - 28px);
+  left: 10px;
+  position: absolute;
+  top: 14px;
+  width: 7px;
+}
+
+.server-tablet-page .server-ready-pickup-card .server-compact-card-header,
+.server-tablet-page .server-ready-pickup-card .server-order-id,
+.server-tablet-page .server-ready-pickup-card .server-ready-meta,
+.server-tablet-page .server-ready-pickup-card .server-ready-timer,
+.server-tablet-page .server-ready-pickup-card .server-compact-items,
+.server-tablet-page .server-ready-pickup-card .server-card-total-line,
+.server-tablet-page .server-ready-pickup-card .server-card-actions,
+.server-tablet-page .server-ready-pickup-card .server-reward-note {
+  margin-left: 10px;
+}
+
+.server-tablet-page .server-ready-meta {
+  align-items: stretch;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) minmax(130px, 0.65fr);
+}
+
+.server-tablet-page .server-ready-slot {
+  background: rgba(255, 250, 240, 0.85);
+  border: 1px solid color-mix(in srgb, var(--slot-accent) 34%, #ffffff);
+  border-left: 8px solid var(--slot-accent);
+  border-radius: 16px;
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+}
+
+.server-tablet-page .server-ready-slot-badge {
+  align-content: center;
+  background: var(--slot-accent);
+  border: 0;
+  border-radius: 18px;
+  color: #fffaf0;
+  display: grid;
+  justify-items: center;
+  min-width: 0;
+  padding: 12px;
+  text-align: center;
+}
+
+.server-tablet-page .server-ready-slot span,
+.server-tablet-page .server-ready-slot-badge span {
+  font-family: Inter, sans-serif;
+  font-size: 0.72rem;
+  font-weight: 900;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.server-tablet-page .server-ready-slot strong {
+  color: var(--srv-coffee);
+  font-family: Poppins, sans-serif;
+  font-size: 1.2rem;
+  line-height: 1.1;
+}
+
+.server-tablet-page .server-ready-slot-badge strong {
+  color: #fffaf0;
+  font-family: Poppins, sans-serif;
+  font-size: 1.05rem;
+  line-height: 1.1;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.server-tablet-page .server-ready-timer {
+  border: 1px solid transparent;
+  border-radius: 14px;
+  font-family: Inter, sans-serif;
+  font-size: 0.95rem;
+  font-weight: 900;
+  padding: 12px 14px;
+}
+
+.server-tablet-page .server-ready-timer-fresh {
+  background: #e8f6ed;
+  border-color: #b5dec4;
+  color: #17693e;
+}
+
+.server-tablet-page .server-ready-timer-watch {
+  background: #fff0cc;
+  border-color: #e7bd63;
+  color: #925b06;
+}
+
+.server-tablet-page .server-ready-timer-alert {
+  background: #ffe0da;
+  border-color: #e47668;
+  color: #a93325;
+}
+
+@media (max-width: 980px) {
+  .server-tablet-page .server-ready-meta {
+    grid-template-columns: 1fr;
+  }
+
+  .server-tablet-page .server-ready-slot-badge {
+    justify-items: start;
     text-align: left;
   }
 }

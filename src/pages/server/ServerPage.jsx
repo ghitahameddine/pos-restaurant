@@ -215,22 +215,26 @@ function normalizeSlotAccent(color) {
 }
 
 function getReadySinceLabel(dateValue, nowTick) {
-  if (!dateValue) {
-    return 'Prete tout juste';
-  }
+  const diffMinutes = getReadySinceMinutes(dateValue, nowTick);
+
+  if (diffMinutes <= 0) return 'Prete maintenant';
+  if (diffMinutes === 1) return 'Prete depuis 1 min';
+  return `Prete depuis ${diffMinutes} min`;
+}
+
+function getReadySinceMinutes(dateValue, nowTick) {
+  if (!dateValue) return 0;
 
   const readyDate = new Date(dateValue);
-  const diffMinutes = Math.max(0, Math.floor((nowTick - readyDate.getTime()) / 60000));
+  if (Number.isNaN(readyDate.getTime())) return 0;
 
-  if (diffMinutes <= 0) {
-    return 'Prete maintenant';
-  }
+  return Math.max(0, Math.floor((nowTick - readyDate.getTime()) / 60000));
+}
 
-  if (diffMinutes === 1) {
-    return 'Prete depuis 1 min';
-  }
-
-  return `Prete depuis ${diffMinutes} min`;
+function getReadyTone(minutes) {
+  if (!Number.isFinite(minutes) || minutes < 4) return 'fresh';
+  if (minutes < 8) return 'watch';
+  return 'alert';
 }
 
 function mapTableStatusToUi(status, hasActiveOrder, hasPaidOrder) {
@@ -1656,6 +1660,11 @@ function ServerPage() {
                                 readySinceLabel={
                                   column.id === 'pickup' ? getReadySinceLabel(order.readySince, nowTick) : ''
                                 }
+                                readySinceTone={
+                                  column.id === 'pickup'
+                                    ? getReadyTone(getReadySinceMinutes(order.readySince, nowTick))
+                                    : ''
+                                }
                                 selected={selectedOrder?.id === order.id}
                                 primaryDisabled={isPrimaryActionDisabled(order)}
                                 onPrimary={() => runPrimaryOrderAction(order)}
@@ -1702,6 +1711,7 @@ function ServerPage() {
                             order={order}
                             slotInfo={getPickupSlotInfo(order, counterSlots)}
                             readySinceLabel={getReadySinceLabel(order.readySince, nowTick)}
+                            readySinceTone={getReadyTone(getReadySinceMinutes(order.readySince, nowTick))}
                             selected={selectedOrder?.id === order.id}
                             primaryDisabled={isPrimaryActionDisabled(order)}
                             onPrimary={() => runPrimaryOrderAction(order)}
@@ -2178,6 +2188,7 @@ function ServerOrderCard({
   order,
   slotInfo,
   readySinceLabel,
+  readySinceTone,
   selected,
   primaryDisabled,
   onPrimary,
@@ -2187,12 +2198,17 @@ function ServerOrderCard({
   const stage = getOrderStage(order);
   const visibleItems = order.items.slice(0, 3);
   const discountAmount = getOrderDiscountAmount(order);
+  const slotAccent = slotInfo ? normalizeSlotAccent(slotInfo.color) : '#b89039';
+  const slotLabel = slotInfo?.colorName || slotInfo?.color || 'Slot attribue';
 
   return (
     <article
       className={`server-compact-order-card status-card-${stage} ${
+        stage === 'pickup' ? 'server-ready-pickup-card' : ''
+      } ${
         selected ? 'is-selected' : ''
       }`}
+      style={{ '--slot-accent': slotAccent }}
       onClick={onSelect}
       onKeyDown={(event) => {
         if (event.key === 'Enter' || event.key === ' ') onSelect();
@@ -2209,23 +2225,27 @@ function ServerOrderCard({
 
         <p className="server-order-id">{order.id}</p>
 
-        {stage === 'pickup' && slotInfo ? (
+        {stage === 'pickup' ? (
           <div className="server-ready-meta">
-            <div className="server-ready-slot">
-              <span>Pickup</span>
+            <div className="server-ready-slot" style={{ '--slot-accent': slotAccent }}>
+              <span>Table a servir</span>
               <strong>Table {order.table}</strong>
             </div>
             <div
               className="server-ready-slot-badge"
-              style={{ '--slot-accent': normalizeSlotAccent(slotInfo.color) }}
+              style={{ '--slot-accent': slotAccent }}
             >
-              <span>{`Slot ${slotInfo.number}`}</span>
-              <strong>{slotInfo.colorName || slotInfo.color}</strong>
+              <span>{slotInfo ? `Slot ${slotInfo.number}` : 'Slot'}</span>
+              <strong>{slotLabel}</strong>
             </div>
           </div>
         ) : null}
 
-        {stage === 'pickup' ? <p className="server-ready-timer">{readySinceLabel}</p> : null}
+        {stage === 'pickup' ? (
+          <p className={`server-ready-timer server-ready-timer-${readySinceTone || 'fresh'}`}>
+            {readySinceLabel}
+          </p>
+        ) : null}
 
         <ul className="server-compact-items">
         {visibleItems.map((item) => (
