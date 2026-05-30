@@ -36,6 +36,11 @@ public class MenuController {
         return menuService.getAllMenuItems();
     }
 
+    @GetMapping("/catalog")
+    public List<MenuItemResponse> getMenuCatalog() {
+        return menuService.getAllMenuItems();
+    }
+
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     public MenuItemResponse createMenuItem(@RequestBody MenuItemRequest request) {
@@ -49,12 +54,22 @@ public class MenuController {
 
     @PatchMapping("/{id}/availability")
     public MenuItemResponse setMenuItemAvailability(@PathVariable Long id, @RequestBody MenuItemRequest request) {
-        return menuService.setMenuItemAvailability(id, request.available() == null || request.available());
+        return menuService.setMenuItemAvailability(
+                id,
+                request.available() == null || request.available(),
+                request.unavailableReason()
+        );
     }
 
     @DeleteMapping("/{id}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void deleteMenuItem(@PathVariable Long id) {
         menuService.deleteMenuItem(id);
+    }
+
+    @DeleteMapping("/{id}/permanent")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void deleteMenuItemPermanently(@PathVariable Long id) {
+        menuService.deleteMenuItemPermanently(id);
     }
 }

@@ -102,6 +102,7 @@ public class CustomerOrder {
 
     public void recalculateTotals() {
         this.subtotal = items.stream()
+                .filter(line -> !line.isCancelled())
                 .map(OrderLine::getLineTotal)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
         this.total = applyRewardToSubtotal(this.subtotal);

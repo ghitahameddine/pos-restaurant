@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
+  API_HEALTH_URL,
+  checkApiHealth,
   forgotPasswordApi,
   loginApi,
   registerClientApi,
@@ -30,6 +32,11 @@ function ClientAuth({ initialMode = 'sign-in', onAuthenticated, onBackToMenu }) 
   }, [initialMode]);
 
   const rememberAuth = (auth) => {
+    if (auth.role !== 'CLIENT') {
+      localStorage.removeItem(AUTH_STORAGE_KEY);
+      throw new Error('Ce compte existe, mais il n est pas un compte client.');
+    }
+
     localStorage.setItem(PHONE_STORAGE_KEY, auth.phone);
     localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(auth));
     onAuthenticated?.({
@@ -38,6 +45,22 @@ function ClientAuth({ initialMode = 'sign-in', onAuthenticated, onBackToMenu }) 
       role: auth.role,
       points: auth.points,
     });
+  };
+
+  const getAuthErrorMessage = async (apiError) => {
+    if (
+      !apiError.message?.includes('Backend indisponible') &&
+      !apiError.message?.includes('API inaccessible')
+    ) {
+      return apiError.message || 'Connexion impossible.';
+    }
+
+    try {
+      await checkApiHealth();
+      return `API active (${API_HEALTH_URL}), mais la connexion a expire. Reessayez ou verifiez la console Spring Boot.`;
+    } catch {
+      return `API inaccessible depuis cette interface: ${API_HEALTH_URL}. Verifiez que Spring Boot tourne et que l'adresse est joignable.`;
+    }
   };
 
   const validatePhone = () => {
@@ -83,7 +106,7 @@ function ClientAuth({ initialMode = 'sign-in', onAuthenticated, onBackToMenu }) 
       });
       rememberAuth(auth);
     } catch (apiError) {
-      setError(apiError.message || "Impossible de creer le compte.");
+      setError(await getAuthErrorMessage(apiError));
     } finally {
       setLoading(false);
     }
@@ -103,7 +126,7 @@ function ClientAuth({ initialMode = 'sign-in', onAuthenticated, onBackToMenu }) 
       const auth = await loginApi({ phone: phone.trim(), password });
       rememberAuth(auth);
     } catch (apiError) {
-      setError(apiError.message || 'Connexion impossible.');
+      setError(await getAuthErrorMessage(apiError));
     } finally {
       setLoading(false);
     }

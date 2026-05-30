@@ -3,17 +3,31 @@ function resolveApiBaseUrl() {
     return import.meta.env.VITE_API_URL;
   }
 
-  const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:';
   const hostname = window.location.hostname || 'localhost';
-  const port = import.meta.env.VITE_API_PORT || '8080';
-  return `${protocol}//${hostname}:${port}/api`;
+  const isLocalDesktop = hostname === 'localhost' || hostname === '127.0.0.1';
+
+  if (isLocalDesktop) {
+    const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:';
+    const port = import.meta.env.VITE_API_PORT || '8080';
+    return `${protocol}//127.0.0.1:${port}/api`;
+  }
+
+  return `${window.location.origin}/api`;
 }
 
 const API_BASE_URL = resolveApiBaseUrl();
 const API_TIMEOUT_MS = 6000;
+const AUTH_TIMEOUT_MS = 6000;
+export const ADMIN_REFRESH_TIMEOUT_MS = 4000;
 const SERVER_AUTH_STORAGE_KEY = 'pos2-server-auth';
 const CLIENT_AUTH_STORAGE_KEY = 'pos2-client-auth';
 export const ADMIN_AUTH_STORAGE_KEY = 'pos2-admin-auth';
+export const API_HEALTH_URL = `${API_BASE_URL}/health`;
+
+function buildApiAccessError(path, detail = '') {
+  const suffix = detail ? ` Detail: ${detail}` : '';
+  return `API inaccessible (${path}) sur ${API_BASE_URL}.${suffix} Verifiez que Spring Boot tourne sur le port 8080 et que l'adresse frontend correspond au backend.`;
+}
 
 function getStoredClientPhone() {
   const rawAuth = localStorage.getItem(CLIENT_AUTH_STORAGE_KEY);
@@ -38,9 +52,7 @@ function getLocalhostFallbackBaseUrl() {
     return '';
   }
 
-  const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:';
-  const port = import.meta.env.VITE_API_PORT || '8080';
-  return `${protocol}//127.0.0.1:${port}/api`;
+  return `${window.location.origin}/api`;
 }
 
 async function fetchJson(baseUrl, path, options = {}) {
@@ -62,33 +74,48 @@ async function fetchJson(baseUrl, path, options = {}) {
   return response.status === 204 ? null : response.json();
 }
 
-async function requestJson(path, options = {}) {
+async function fetchJsonWithTimeout(baseUrl, path, options = {}) {
   const { controller, timeoutId } = withTimeout(options.timeout || API_TIMEOUT_MS);
 
   try {
-    try {
-      return await fetchJson(API_BASE_URL, path, { ...options, signal: controller.signal });
-    } catch (error) {
-      const fallbackBaseUrl = getLocalhostFallbackBaseUrl();
-      const canRetryLocally =
-        fallbackBaseUrl &&
-        fallbackBaseUrl !== API_BASE_URL &&
-        error instanceof TypeError &&
-        !controller.signal.aborted;
-
-      if (canRetryLocally) {
-        return await fetchJson(fallbackBaseUrl, path, { ...options, signal: controller.signal });
-      }
-
-      if (error?.name === 'AbortError' || controller.signal.aborted) {
-        throw new Error(`Backend indisponible: ${API_BASE_URL}. Verifiez que Spring Boot tourne sur le port 8080.`);
-      }
-
-      throw error;
-    }
+    return await fetchJson(baseUrl, path, { ...options, signal: controller.signal });
   } finally {
     window.clearTimeout(timeoutId);
   }
+}
+
+function isNetworkError(error) {
+  return error instanceof TypeError || error?.name === 'AbortError';
+}
+
+async function requestJson(path, options = {}) {
+  const fallbackBaseUrl = getLocalhostFallbackBaseUrl();
+  const candidates = [API_BASE_URL];
+
+  if (fallbackBaseUrl && fallbackBaseUrl !== API_BASE_URL) {
+    candidates.push(fallbackBaseUrl);
+  }
+
+  let lastNetworkError = null;
+
+  for (const baseUrl of candidates) {
+    try {
+      return await fetchJsonWithTimeout(baseUrl, path, options);
+    } catch (error) {
+      if (!isNetworkError(error)) {
+        throw error;
+      }
+
+      lastNetworkError = error;
+    }
+  }
+
+  const detail =
+    lastNetworkError?.name === 'AbortError'
+      ? `timeout ${options.timeout || API_TIMEOUT_MS}ms`
+      : lastNetworkError?.message || 'connexion refusee';
+
+  throw new Error(buildApiAccessError(path, detail));
 }
 
 export function isBackendOrder(order) {
@@ -163,9 +190,12 @@ export function mapOrderFromApi(order) {
     id: item.menuItemId,
     backendLineId: item.id,
     name: item.itemName,
-    price: Number(item.unitPrice || 0),
+    price: item.cancelled ? 0 : Number(item.unitPrice || 0),
+    originalPrice: Number(item.unitPrice || 0),
     quantity: Number(item.quantity || 0),
     points: Number(item.points || 0),
+    cancelled: Boolean(item.cancelled),
+    cancellationReason: item.cancellationReason || '',
   }));
 
   const reward = order.reward
@@ -225,9 +255,9 @@ export function mapOrderFromApi(order) {
   };
 }
 
-export async function fetchApiSlots(zone = '') {
+export async function fetchApiSlots(zone = '', options = {}) {
   const query = zone ? `?zone=${encodeURIComponent(zone)}` : '';
-  return requestJson(`/slots${query}`);
+  return requestJson(`/slots${query}`, options);
 }
 
 export async function createApiSlot(slot) {
@@ -260,8 +290,8 @@ export async function fetchApiTables() {
   return requestJson('/tables');
 }
 
-export async function fetchAdminTablesApi() {
-  return requestJson('/tables/admin');
+export async function fetchAdminTablesApi(options = {}) {
+  return requestJson('/tables/admin', options);
 }
 
 export async function createApiTable(table) {
@@ -331,8 +361,8 @@ export function mapBillRequestFromApi(request) {
   };
 }
 
-export async function fetchApiOrders() {
-  const orders = await requestJson('/orders');
+export async function fetchApiOrders(options = {}) {
+  const orders = await requestJson('/orders', options);
   return orders.map(mapOrderFromApi);
 }
 
@@ -424,6 +454,7 @@ export async function printApiBillRequest(request, paymentMethod = 'Especes') {
 export async function registerClientApi({ phone, otp, password, name }) {
   return requestJson('/auth/register', {
     method: 'POST',
+    timeout: AUTH_TIMEOUT_MS,
     body: JSON.stringify({ phone, otp, password, name }),
   });
 }
@@ -431,16 +462,21 @@ export async function registerClientApi({ phone, otp, password, name }) {
 export async function loginApi({ phone, password }) {
   return requestJson('/auth/login', {
     method: 'POST',
+    timeout: AUTH_TIMEOUT_MS,
     body: JSON.stringify({ phone, password }),
   });
 }
 
-export async function fetchAdminDashboardApi() {
-  return requestJson('/admin/dashboard');
+export async function checkApiHealth(timeout = AUTH_TIMEOUT_MS) {
+  return requestJson('/health', { timeout });
 }
 
-export async function fetchRestaurantStateApi() {
-  return requestJson('/admin/restaurant-state');
+export async function fetchAdminDashboardApi(options = {}) {
+  return requestJson('/admin/dashboard', options);
+}
+
+export async function fetchRestaurantStateApi(options = {}) {
+  return requestJson('/admin/restaurant-state', options);
 }
 
 export async function updateRestaurantStateApi(state) {
@@ -450,8 +486,12 @@ export async function updateRestaurantStateApi(state) {
   });
 }
 
-export async function fetchAdminStaffApi() {
-  return requestJson('/admin/staff');
+export async function fetchAdminStaffApi(options = {}) {
+  return requestJson('/admin/staff', options);
+}
+
+export async function fetchAdminUsersApi(options = {}) {
+  return requestJson('/admin/users', options);
 }
 
 export async function createAdminStaffApi(staff) {
@@ -474,6 +514,24 @@ export async function deleteAdminStaffApi(id) {
   });
 }
 
+export async function deleteAdminStaffPermanentApi(id) {
+  return requestJson(`/admin/staff/${id}/permanent`, {
+    method: 'DELETE',
+  });
+}
+
+export async function deactivateAdminUserApi(id) {
+  return requestJson(`/admin/users/${id}/deactivate`, {
+    method: 'PATCH',
+  });
+}
+
+export async function deleteAdminUserPermanentApi(id) {
+  return requestJson(`/admin/users/${id}/permanent`, {
+    method: 'DELETE',
+  });
+}
+
 export async function cancelAdminOrderApi(id) {
   return mapOrderFromApi(await requestJson(`/admin/orders/${id}/cancel`, {
     method: 'PATCH',
@@ -486,8 +544,12 @@ export async function reopenAdminPaymentApi(id) {
   }));
 }
 
-export async function fetchAdminMenuApi() {
-  return requestJson('/menu/admin');
+export async function fetchAdminMenuApi(options = {}) {
+  return requestJson('/menu/admin', options);
+}
+
+export async function fetchMenuCatalogApi() {
+  return requestJson('/menu/catalog');
 }
 
 export async function createAdminMenuItemApi(item) {
@@ -504,8 +566,21 @@ export async function updateAdminMenuItemApi(id, item) {
   });
 }
 
+export async function setMenuItemAvailabilityApi(id, available, unavailableReason = '') {
+  return requestJson(`/menu/${id}/availability`, {
+    method: 'PATCH',
+    body: JSON.stringify({ available, unavailableReason }),
+  });
+}
+
 export async function deleteAdminMenuItemApi(id) {
   return requestJson(`/menu/${id}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function deleteAdminMenuItemPermanentApi(id) {
+  return requestJson(`/menu/${id}/permanent`, {
     method: 'DELETE',
   });
 }
@@ -528,8 +603,8 @@ export async function fetchRewardsApi() {
   return requestJson('/rewards');
 }
 
-export async function fetchAdminRewardsApi() {
-  return requestJson('/rewards/admin');
+export async function fetchAdminRewardsApi(options = {}) {
+  return requestJson('/rewards/admin', options);
 }
 
 export async function createAdminRewardApi(reward) {
@@ -587,14 +662,28 @@ export async function readyApiKitchenStationOrder(station, orderId) {
   });
 }
 
+export async function cancelApiKitchenStationItem(station, orderId, itemId, reason) {
+  return requestJson(`/kitchen/stations/${station}/orders/${orderId}/items/${itemId}/cancel`, {
+    method: 'PATCH',
+    body: JSON.stringify({ reason }),
+  });
+}
+
 export async function completeApiKitchenOrder(orderId) {
   return mapOrderFromApi(await requestJson(`/kitchen/orders/${orderId}/complete`, {
     method: 'POST',
   }));
 }
 
-export function subscribeRealtime({ onOrder, onBillRequest, onTable, onError } = {}) {
-  const realtimeEnabled = import.meta.env.VITE_ENABLE_SSE === 'true';
+export async function cancelApiKitchenOrder(orderId, reason) {
+  return mapOrderFromApi(await requestJson(`/kitchen/orders/${orderId}/cancel`, {
+    method: 'POST',
+    body: JSON.stringify({ reason }),
+  }));
+}
+
+export function subscribeRealtime({ onOrder, onBillRequest, onTable, onMenu, onError } = {}) {
+  const realtimeEnabled = import.meta.env.VITE_ENABLE_SSE !== 'false';
 
   if (!realtimeEnabled) {
     return () => {};
@@ -633,6 +722,10 @@ export function subscribeRealtime({ onOrder, onBillRequest, onTable, onError } =
 
     eventSource.addEventListener('TABLE_UPDATED', (event) => {
       safelyReadEvent(event, (payload) => payload, onTable);
+    });
+
+    eventSource.addEventListener('MENU_UPDATED', (event) => {
+      safelyReadEvent(event, (payload) => payload, onMenu);
     });
 
     eventSource.addEventListener('PING', () => {});

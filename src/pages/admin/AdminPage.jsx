@@ -1,15 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ADMIN_AUTH_STORAGE_KEY,
+  ADMIN_REFRESH_TIMEOUT_MS,
   cancelAdminOrderApi,
   createAdminMenuItemApi,
   createAdminRewardApi,
   createAdminStaffApi,
   createApiSlot,
   createApiTable,
-  deleteAdminMenuItemApi,
+  deactivateAdminUserApi,
+  deleteAdminMenuItemPermanentApi,
   deleteAdminRewardApi,
   deleteAdminStaffApi,
+  deleteAdminStaffPermanentApi,
+  deleteAdminUserPermanentApi,
   deleteApiSlot,
   deleteApiTable,
   deleteApiTablePermanent,
@@ -18,6 +22,7 @@ import {
   fetchAdminRewardsApi,
   fetchAdminStaffApi,
   fetchAdminTablesApi,
+  fetchAdminUsersApi,
   fetchApiOrders,
   fetchApiSlots,
   fetchRestaurantStateApi,
@@ -36,15 +41,113 @@ import { formatPrice } from '../../utils/format';
 import heroImage from '../../assets/hero.png';
 
 const tabs = [
-  { id: 'dashboard', label: 'Dashboard' },
-  { id: 'menu', label: 'Menu' },
-  { id: 'tables', label: 'Tables & QR' },
-  { id: 'staff', label: 'Staff' },
-  { id: 'rewards', label: 'Recompenses' },
-  { id: 'slots', label: 'Slots' },
-  { id: 'state', label: 'Etat restaurant' },
-  { id: 'emergency', label: 'Corrections' },
+  { id: 'dashboard', label: 'Dashboard', icon: 'dashboard' },
+  { id: 'menu', label: 'Menu', icon: 'menu' },
+  { id: 'stock', label: 'Stock', icon: 'stock' },
+  { id: 'tables', label: 'Tables & QR', icon: 'qr' },
+  { id: 'staff', label: 'Staff', icon: 'staff' },
+  { id: 'users', label: 'Clients', icon: 'users' },
+  { id: 'rewards', label: 'Recompenses', icon: 'reward' },
+  { id: 'slots', label: 'Slots', icon: 'slots' },
+  { id: 'state', label: 'Etat restaurant', icon: 'state' },
+  { id: 'emergency', label: 'Corrections', icon: 'alert' },
 ];
+
+function AdminIcon({ name, className = '' }) {
+  const common = {
+    fill: 'none',
+    stroke: 'currentColor',
+    strokeLinecap: 'round',
+    strokeLinejoin: 'round',
+    strokeWidth: 2,
+    viewBox: '0 0 24 24',
+  };
+
+  const paths = {
+    dashboard: (
+      <>
+        <rect x="3" y="3" width="7" height="7" rx="2" />
+        <rect x="14" y="3" width="7" height="7" rx="2" />
+        <rect x="3" y="14" width="7" height="7" rx="2" />
+        <rect x="14" y="14" width="7" height="7" rx="2" />
+      </>
+    ),
+    menu: (
+      <>
+        <path d="M4 7h16" />
+        <path d="M4 12h16" />
+        <path d="M4 17h11" />
+      </>
+    ),
+    stock: (
+      <>
+        <path d="M4 8l8-4 8 4-8 4-8-4z" />
+        <path d="M4 8v8l8 4 8-4V8" />
+        <path d="M12 12v8" />
+      </>
+    ),
+    qr: (
+      <>
+        <rect x="4" y="4" width="6" height="6" rx="1" />
+        <rect x="14" y="4" width="6" height="6" rx="1" />
+        <rect x="4" y="14" width="6" height="6" rx="1" />
+        <path d="M14 14h2v2h-2z" />
+        <path d="M18 14h2v6h-6v-2" />
+      </>
+    ),
+    staff: (
+      <>
+        <path d="M16 21v-2a4 4 0 0 0-8 0v2" />
+        <circle cx="12" cy="7" r="4" />
+        <path d="M19 8v6" />
+        <path d="M22 11h-6" />
+      </>
+    ),
+    users: (
+      <>
+        <path d="M17 21v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2" />
+        <circle cx="10" cy="7" r="4" />
+        <path d="M22 21v-2a4 4 0 0 0-3-3.87" />
+        <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+      </>
+    ),
+    reward: (
+      <>
+        <path d="M20 12v8H4v-8" />
+        <path d="M2 7h20v5H2z" />
+        <path d="M12 7v13" />
+        <path d="M12 7H8.5A2.5 2.5 0 1 1 11 4.5L12 7z" />
+        <path d="M12 7h3.5A2.5 2.5 0 1 0 13 4.5L12 7z" />
+      </>
+    ),
+    slots: (
+      <>
+        <rect x="3" y="5" width="18" height="14" rx="3" />
+        <path d="M9 5v14" />
+        <path d="M15 5v14" />
+      </>
+    ),
+    state: (
+      <>
+        <path d="M12 2v10" />
+        <path d="M18.4 6.6a9 9 0 1 1-12.8 0" />
+      </>
+    ),
+    alert: (
+      <>
+        <path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />
+        <path d="M12 9v4" />
+        <path d="M12 17h.01" />
+      </>
+    ),
+  };
+
+  return (
+    <svg className={`admin-icon ${className}`} aria-hidden="true" {...common}>
+      {paths[name] || paths.dashboard}
+    </svg>
+  );
+}
 
 const imagePresets = [
   heroImage,
@@ -65,6 +168,8 @@ const emptyMenuDraft = {
   details: '',
   imageUrl: imagePresets[0],
   available: true,
+  stockQuantity: '',
+  unavailableReason: '',
 };
 
 const emptyTableDraft = {
@@ -107,7 +212,7 @@ const slotColorFallbacks = {
   rouge: '#bb4639',
   bleu: '#23545b',
   vert: '#207f5c',
-  jaune: '#b89039',
+  jaune: '#c76b42',
 };
 
 function normalizeSlotColor(color) {
@@ -115,7 +220,7 @@ function normalizeSlotColor(color) {
   if (/^#[0-9a-f]{6}$/i.test(value)) {
     return value;
   }
-  return slotColorFallbacks[value.toLowerCase()] || '#b89039';
+  return slotColorFallbacks[value.toLowerCase()] || '#5f6f6a';
 }
 
 function getStoredAdminAuth() {
@@ -190,6 +295,7 @@ function AdminPage() {
   const [menuItems, setMenuItems] = useState([]);
   const [tablesData, setTablesData] = useState([]);
   const [staff, setStaff] = useState([]);
+  const [users, setUsers] = useState([]);
   const [rewards, setRewards] = useState([]);
   const [slots, setSlots] = useState([]);
   const [orders, setOrders] = useState([]);
@@ -202,6 +308,7 @@ function AdminPage() {
   const [slotDraft, setSlotDraft] = useState(emptySlotDraft);
   const [exportDraft, setExportDraft] = useState({ date: '', orderId: '' });
   const [selectedExportOrderIds, setSelectedExportOrderIds] = useState([]);
+  const [stockDrafts, setStockDrafts] = useState({});
   const adminLoadingRef = useRef(false);
   const adminInteractionPauseUntilRef = useRef(0);
 
@@ -229,6 +336,49 @@ function AdminPage() {
         .slice(0, 12),
     [orders],
   );
+  const exportSearchOrders = useMemo(() => {
+    const query = exportDraft.orderId.trim().toLowerCase();
+    if (!query) return recentExportOrders;
+
+    return orders
+      .filter((order) => String(order.id || '').toLowerCase().includes(query))
+      .sort((firstOrder, secondOrder) => Date.parse(secondOrder.createdAt || 0) - Date.parse(firstOrder.createdAt || 0));
+  }, [exportDraft.orderId, orders, recentExportOrders]);
+  const dashboardRecentOrders = useMemo(() => recentExportOrders.slice(0, 7), [recentExportOrders]);
+  const sourceStats = useMemo(() => {
+    const withAccount = Number(dashboard?.ordersWithAccount || 0);
+    const withoutAccount = Number(dashboard?.ordersWithoutAccount || 0);
+    const serverAssisted = orders.filter((order) => order.accessMode === 'server-assisted').length;
+    const clientQr = Math.max(0, orders.length - serverAssisted);
+    return {
+      withAccount,
+      withoutAccount,
+      serverAssisted,
+      clientQr,
+      total: Math.max(1, withAccount + withoutAccount),
+    };
+  }, [dashboard, orders]);
+  const serviceStats = useMemo(() => {
+    const paidCount = paidOrders.length;
+    const totalRevenue = paidOrders.reduce((sum, order) => sum + Number(order.total || 0), 0);
+    const averageBasket = paidCount > 0 ? totalRevenue / paidCount : 0;
+    const servedUnpaid = orders.filter((order) => order.status === 'Servie').length;
+    const accountOrders = Number(dashboard?.ordersWithAccount || 0);
+    const totalAccountTracked = Math.max(1, accountOrders + Number(dashboard?.ordersWithoutAccount || 0));
+    const accountRate = Math.round((accountOrders / totalAccountTracked) * 100);
+    const unavailableProducts = Number(dashboard?.unavailableMenuItems || 0);
+    const menuAvailabilityRate =
+      menuItems.length > 0 ? Math.round(((menuItems.length - unavailableProducts) / menuItems.length) * 100) : 100;
+
+    return {
+      paidCount,
+      totalRevenue,
+      averageBasket,
+      servedUnpaid,
+      accountRate,
+      menuAvailabilityRate,
+    };
+  }, [dashboard, menuItems.length, orders, paidOrders]);
 
   function getNextSlotNumber(zone) {
     const sameZoneSlots = slots.filter((slot) => slot.zone === zone);
@@ -260,16 +410,18 @@ function AdminPage() {
     }
 
     try {
+      const requestOptions = silent ? { timeout: ADMIN_REFRESH_TIMEOUT_MS } : {};
       const results = await Promise.allSettled([
-        fetchAdminDashboardApi(),
-        fetchAdminMenuApi(),
-        fetchAdminTablesApi(),
-        fetchAdminStaffApi(),
-        fetchAdminRewardsApi(),
-        fetchApiSlots('KITCHEN'),
-        fetchApiSlots('COUNTER'),
-        fetchApiOrders(),
-        fetchRestaurantStateApi(),
+        fetchAdminDashboardApi(requestOptions),
+        fetchAdminMenuApi(requestOptions),
+        fetchAdminTablesApi(requestOptions),
+        fetchAdminStaffApi(requestOptions),
+        fetchAdminUsersApi(requestOptions),
+        fetchAdminRewardsApi(requestOptions),
+        fetchApiSlots('KITCHEN', requestOptions),
+        fetchApiSlots('COUNTER', requestOptions),
+        fetchApiOrders(requestOptions),
+        fetchRestaurantStateApi(requestOptions),
       ]);
 
       const getResult = (index, fallback) =>
@@ -279,16 +431,23 @@ function AdminPage() {
       setMenuItems(Array.isArray(getResult(1, menuItems)) ? getResult(1, menuItems) : []);
       setTablesData(Array.isArray(getResult(2, tablesData)) ? getResult(2, tablesData) : []);
       setStaff(Array.isArray(getResult(3, staff)) ? getResult(3, staff) : []);
-      setRewards(Array.isArray(getResult(4, rewards)) ? getResult(4, rewards) : []);
-      const kitchenSlots = getResult(5, []);
-      const counterSlots = getResult(6, []);
+      setUsers(Array.isArray(getResult(4, users)) ? getResult(4, users) : []);
+      setRewards(Array.isArray(getResult(5, rewards)) ? getResult(5, rewards) : []);
+      const kitchenSlots = getResult(6, []);
+      const counterSlots = getResult(7, []);
       setSlots([...(Array.isArray(kitchenSlots) ? kitchenSlots : []), ...(Array.isArray(counterSlots) ? counterSlots : [])]);
-      setOrders(Array.isArray(getResult(7, orders)) ? getResult(7, orders) : []);
-      setRestaurantState(getResult(8, restaurantState));
+      setOrders(Array.isArray(getResult(8, orders)) ? getResult(8, orders) : []);
+      setRestaurantState(getResult(9, restaurantState));
 
-      const failedRequest = results.find((result) => result.status === 'rejected');
-      if (failedRequest && !silent) {
-        setError(failedRequest.reason?.message || 'Une partie des donnees admin n a pas pu etre chargee.');
+      const criticalIndexes = [0, 1, 2, 8];
+      const criticalFailure = results.find(
+        (result, index) => criticalIndexes.includes(index) && result.status === 'rejected',
+      );
+
+      if (!criticalFailure) {
+        setError('');
+      } else if (!silent) {
+        setError(criticalFailure.reason?.message || 'Une partie des donnees admin n a pas pu etre chargee.');
       }
     } catch (loadError) {
       if (!silent) {
@@ -316,7 +475,7 @@ function AdminPage() {
         window.clearTimeout(realtimeRefreshId);
       }
 
-      realtimeRefreshId = window.setTimeout(() => loadAdminData({ silent: true }), 250);
+      realtimeRefreshId = window.setTimeout(() => loadAdminData({ silent: true, force: true }), 250);
     };
 
     const intervalId = window.setInterval(() => loadAdminData({ silent: true }), 30000);
@@ -324,6 +483,7 @@ function AdminPage() {
       onOrder: scheduleAdminRefresh,
       onBillRequest: scheduleAdminRefresh,
       onTable: scheduleAdminRefresh,
+      onMenu: scheduleAdminRefresh,
     });
 
     return () => {
@@ -373,6 +533,9 @@ function AdminPage() {
     if (!menuDraft.station.trim()) return 'Le poste cuisine est obligatoire.';
     if (!menuDraft.description.trim()) return 'La description est obligatoire.';
     if (Number(menuDraft.price) < 0) return 'Le prix doit etre positif.';
+    if (menuDraft.stockQuantity !== '' && Number(menuDraft.stockQuantity) < 0) {
+      return 'Le stock ne peut pas etre negatif.';
+    }
     return '';
   }
 
@@ -457,7 +620,12 @@ function AdminPage() {
         ...menuDraft,
         price: Number(menuDraft.price),
         points: Number(menuDraft.points),
+        stockQuantity:
+          menuDraft.stockQuantity === '' || menuDraft.stockQuantity === null || menuDraft.stockQuantity === undefined
+            ? null
+            : Number(menuDraft.stockQuantity),
         available: Boolean(menuDraft.available),
+        unavailableReason: menuDraft.available ? '' : menuDraft.unavailableReason,
       };
       if (menuDraft.id) {
         await updateAdminMenuItemApi(menuDraft.id, payload);
@@ -471,6 +639,65 @@ function AdminPage() {
     } catch (actionError) {
       showError(actionError.message || 'Impossible de sauvegarder le produit.');
     }
+  }
+
+  function buildMenuPayload(item, overrides = {}) {
+    const nextItem = { ...item, ...overrides };
+    return {
+      name: nextItem.name,
+      category: nextItem.category,
+      price: Number(nextItem.price || 0),
+      points: Number(nextItem.points || 0),
+      station: nextItem.station,
+      description: nextItem.description,
+      details: nextItem.details || '',
+      imageUrl: nextItem.imageUrl || '',
+      available: Boolean(nextItem.available),
+      stockQuantity:
+        nextItem.stockQuantity === '' || nextItem.stockQuantity === null || nextItem.stockQuantity === undefined
+          ? null
+          : Number(nextItem.stockQuantity),
+      unavailableReason: nextItem.available ? '' : nextItem.unavailableReason || 'Indisponible temporairement',
+    };
+  }
+
+  function getStockDraft(item) {
+    return stockDrafts[item.id] || {
+      available: item.available,
+      stockQuantity: item.stockQuantity ?? '',
+      unavailableReason: item.unavailableReason || '',
+    };
+  }
+
+  function updateStockDraft(item, updates) {
+    setStockDrafts((currentDrafts) => ({
+      ...currentDrafts,
+      [item.id]: {
+        ...getStockDraft(item),
+        ...updates,
+      },
+    }));
+  }
+
+  async function saveStockItem(item, forcedAvailability) {
+    const draft = getStockDraft(item);
+    const nextAvailable = typeof forcedAvailability === 'boolean' ? forcedAvailability : draft.available;
+    const nextReason = nextAvailable ? '' : draft.unavailableReason || 'Indisponible temporairement';
+    const payload = buildMenuPayload(item, {
+      available: nextAvailable,
+      stockQuantity: draft.stockQuantity,
+      unavailableReason: nextReason,
+    });
+
+    await runAdminAction(
+      () => updateAdminMenuItemApi(item.id, payload),
+      nextAvailable ? 'Produit disponible dans le menu.' : 'Produit retire temporairement du menu.',
+    );
+    setStockDrafts((currentDrafts) => {
+      const nextDrafts = { ...currentDrafts };
+      delete nextDrafts[item.id];
+      return nextDrafts;
+    });
   }
 
   async function saveTable(event) {
@@ -635,7 +862,7 @@ function AdminPage() {
   }
 
   function selectRecentExportOrders() {
-    setSelectedExportOrderIds(recentExportOrders.map((order) => String(order.backendId || order.id)));
+    setSelectedExportOrderIds(exportSearchOrders.map((order) => String(order.backendId || order.id)));
   }
 
   function clearExportSelection() {
@@ -827,7 +1054,8 @@ function AdminPage() {
               onClick={() => setActiveTab(tab.id)}
               type="button"
             >
-              <span>{String(index + 1).padStart(2, '0')}</span>
+              <span className="admin-nav-icon"><AdminIcon name={tab.icon} /></span>
+              <small>{String(index + 1).padStart(2, '0')}</small>
               {tab.label}
             </button>
           ))}
@@ -841,7 +1069,12 @@ function AdminPage() {
         <header className="admin-topbar">
           <div>
             <p className="eyebrow">Back-office restaurant</p>
-            <h1>{tabs.find((tab) => tab.id === activeTab)?.label}</h1>
+            <h1 className="admin-page-title">
+              <span className="admin-title-icon">
+                <AdminIcon name={tabs.find((tab) => tab.id === activeTab)?.icon || 'dashboard'} />
+              </span>
+              {tabs.find((tab) => tab.id === activeTab)?.label}
+            </h1>
           </div>
           <div className="admin-session">
             <span>{auth.name?.slice(0, 2).toUpperCase() || 'AD'}</span>
@@ -857,36 +1090,70 @@ function AdminPage() {
         {loading && <div className="admin-loading">Chargement des donnees...</div>}
 
         {activeTab === 'dashboard' && (
-          <section className="admin-section">
-            <div className="admin-metrics-grid">
-              <MetricCard label="Commandes actives" value={dashboard?.activeOrders || 0} />
-              <MetricCard label="A valider" value={dashboard?.ordersToValidate || 0} tone="gold" />
-              <MetricCard label="En cuisine" value={dashboard?.kitchenOrders || 0} />
-              <MetricCard label="Tables occupees" value={dashboard?.occupiedTables || 0} />
-              <MetricCard label="Retards cuisine" value={dashboard?.kitchenDelayedOrders || 0} tone="danger" />
-              <MetricCard label="Ventes aujourd hui" value={formatPrice(Number(dashboard?.salesToday || 0))} tone="gold" />
+          <section className="admin-section admin-dashboard-pro">
+            <div className="admin-dashboard-command">
+              <div>
+                <p className="eyebrow">Vue operationnelle</p>
+                <h2>Controle restaurant</h2>
+                <span>Les chiffres utiles pour agir vite, sans bruit visuel.</span>
+              </div>
+              <div className="admin-command-status">
+                <strong>{restaurantState?.open ? 'Restaurant ouvert' : 'Restaurant ferme'}</strong>
+                <span>{restaurantState?.orderingPaused ? 'Commandes en pause' : 'Commandes actives'}</span>
+                <small>{restaurantState?.message || 'Aucun message operationnel.'}</small>
+              </div>
             </div>
 
-            <div className="admin-grid-2">
-              <Panel title="Flux operationnel">
-                <ProgressRow label="A valider" value={dashboard?.ordersToValidate || 0} max={dashboard?.activeOrders || 1} />
-                <ProgressRow label="Cuisine" value={dashboard?.kitchenOrders || 0} max={dashboard?.activeOrders || 1} />
-                <ProgressRow label="Pretes" value={dashboard?.readyOrders || 0} max={dashboard?.activeOrders || 1} />
-                <ProgressRow label="Demandes addition" value={dashboard?.billRequests || 0} max={dashboard?.activeOrders || 1} />
+            <div className="admin-priority-grid">
+              <MetricCard icon="AV" label="A valider maintenant" value={dashboard?.ordersToValidate || 0} tone="gold" />
+              <MetricCard icon="KD" label="En cuisine" value={dashboard?.kitchenOrders || 0} />
+              <MetricCard icon="RD" label="Retards cuisine" value={dashboard?.kitchenDelayedOrders || 0} tone="danger" />
+              <MetricCard icon="CA" label="Ventes aujourd hui" value={formatPrice(Number(dashboard?.salesToday || 0))} tone="gold" />
+            </div>
+
+            <div className="admin-dashboard-layout">
+              <Panel title="Flux de service">
+                <div className="admin-flow-grid">
+                  <FlowStep label="A valider" value={dashboard?.ordersToValidate || 0} hint="Serveur doit confirmer" />
+                  <FlowStep label="Cuisine" value={dashboard?.kitchenOrders || 0} hint="Preparation en cours" />
+                  <FlowStep label="Pretes" value={dashboard?.readyOrders || 0} hint="Plateaux a servir" />
+                  <FlowStep label="Additions" value={dashboard?.billRequests || 0} hint="Demandes clients" />
+                </div>
+                <DashboardRealStats stats={serviceStats} />
               </Panel>
-              <Panel title="Etat restaurant">
-                <StatusLine label="Restaurant" value={restaurantState?.open ? 'Ouvert' : 'Ferme'} />
-                <StatusLine label="Commandes" value={restaurantState?.orderingPaused ? 'Pausees' : 'Actives'} />
-                <StatusLine label="QR ordering" value={restaurantState?.qrOrderingPaused ? 'Pause' : 'Actif'} />
-                <p className="admin-muted">{restaurantState?.message || 'Aucun message.'}</p>
+
+              <Panel title="Sante restaurant">
+                <StatusLine label="Commandes actives" value={dashboard?.activeOrders || 0} />
+                <StatusLine label="Tables occupees" value={dashboard?.occupiedTables || 0} />
+                <StatusLine label="Utilisateurs" value={dashboard?.totalUsers || users.length || 0} />
+                <StatusLine label="Produits indisponibles" value={dashboard?.unavailableMenuItems || 0} />
+              </Panel>
+            </div>
+
+            <div className="admin-dashboard-layout">
+              <Panel title="Clients et commandes">
+                <OrderSplitCard stats={sourceStats} />
+                <div className="admin-mini-grid">
+                  <StatusLine label="Clients comptes" value={dashboard?.clientUsers || 0} />
+                  <StatusLine label="Staff" value={dashboard?.staffUsers || staff.length || 0} />
+                  <StatusLine label="Avec compte" value={dashboard?.ordersWithAccount || 0} />
+                  <StatusLine label="Sans compte" value={dashboard?.ordersWithoutAccount || 0} />
+                </div>
+              </Panel>
+
+              <Panel title="Dernieres commandes">
+                <DashboardOrdersTable orders={dashboardRecentOrders} />
               </Panel>
             </div>
 
             <Panel title="Exports commandes">
-              <div className="admin-export-panel">
-                <div>
-                  <h3>Toutes les commandes</h3>
-                  <p>Telecharger toutes les commandes visibles dans le back-office.</p>
+              <div className="admin-export-pro">
+                <div className="admin-export-block">
+                  <span className="admin-export-icon">ALL</span>
+                  <div>
+                    <h3>Toutes les commandes</h3>
+                    <p>Telecharger tout l historique charge dans le back-office.</p>
+                  </div>
                   <div className="admin-card-actions">
                     <button className="admin-secondary-button" onClick={() => downloadOrdersCsv('all')} type="button">
                       CSV toutes
@@ -896,45 +1163,44 @@ function AdminPage() {
                     </button>
                   </div>
                 </div>
-                <div className="admin-export-selection-card">
+
+                <div className="admin-export-block admin-export-block-wide">
+                  <span className="admin-export-icon">ORD</span>
                   <div>
                     <h3>Une ou plusieurs commandes</h3>
-                    <p>
-                      Selectionne les commandes recentes a exporter. Parfait pour reimprimer ou
-                      envoyer un petit rapport.
-                    </p>
+                    <p>Recherche par numero de commande, selectionne, puis exporte en CSV ou PDF.</p>
                   </div>
+                  <Field
+                    label="Numero de commande"
+                    value={exportDraft.orderId}
+                    onChange={(value) => setExportDraft({ ...exportDraft, orderId: value })}
+                    placeholder="Ex: ORD-202605..."
+                  />
                   <div className="admin-export-selection-toolbar">
                     <button className="admin-secondary-button" onClick={selectRecentExportOrders} type="button">
-                      Tout selectionner
+                      Selectionner resultats
                     </button>
                     <button className="admin-ghost-button" onClick={clearExportSelection} type="button">
                       Vider
                     </button>
                   </div>
                   <div className="admin-export-order-list">
-                    {recentExportOrders.map((order) => {
+                    {exportSearchOrders.map((order) => {
                       const orderKey = String(order.backendId || order.id);
                       const isChecked = selectedExportOrderIds.includes(orderKey);
                       return (
                         <label className="admin-export-order-row" key={orderKey}>
-                          <input
-                            checked={isChecked}
-                            onChange={() => toggleExportOrder(order)}
-                            type="checkbox"
-                          />
+                          <input checked={isChecked} onChange={() => toggleExportOrder(order)} type="checkbox" />
                           <span>
                             <strong>{order.id}</strong>
-                            <small>
-                              Table {order.table} · {orderStatusLabel(order.status)}
-                            </small>
+                            <small>Table {order.table} - {orderStatusLabel(order.status)}</small>
                           </span>
                           <b>{formatPrice(Number(order.total || 0))}</b>
                         </label>
                       );
                     })}
-                    {recentExportOrders.length === 0 && (
-                      <p className="admin-muted">Aucune commande disponible pour le moment.</p>
+                    {exportSearchOrders.length === 0 && (
+                      <p className="admin-muted">Aucune commande trouvee.</p>
                     )}
                   </div>
                   <div className="admin-card-actions">
@@ -944,9 +1210,21 @@ function AdminPage() {
                     <button className="admin-primary-button" onClick={() => downloadOrdersPdf('selected')} type="button">
                       PDF selection
                     </button>
+                    <button className="admin-secondary-button" onClick={() => downloadOrdersCsv('order')} type="button">
+                      CSV recherche
+                    </button>
+                    <button className="admin-primary-button" onClick={() => downloadOrdersPdf('order')} type="button">
+                      PDF recherche
+                    </button>
                   </div>
                 </div>
-                <div>
+
+                <div className="admin-export-block">
+                  <span className="admin-export-icon">DAY</span>
+                  <div>
+                    <h3>Par date</h3>
+                    <p>Exporter seulement les commandes d une journee precise.</p>
+                  </div>
                   <Field
                     label="Date exacte"
                     type="date"
@@ -959,21 +1237,6 @@ function AdminPage() {
                     </button>
                     <button className="admin-primary-button" onClick={() => downloadOrdersPdf('date')} type="button">
                       PDF date
-                    </button>
-                  </div>
-                </div>
-                <div>
-                  <Field
-                    label="Numero commande"
-                    value={exportDraft.orderId}
-                    onChange={(value) => setExportDraft({ ...exportDraft, orderId: value })}
-                  />
-                  <div className="admin-card-actions">
-                    <button className="admin-secondary-button" onClick={() => downloadOrdersCsv('order')} type="button">
-                      CSV commande
-                    </button>
-                    <button className="admin-primary-button" onClick={() => downloadOrdersPdf('order')} type="button">
-                      PDF commande
                     </button>
                   </div>
                 </div>
@@ -1032,11 +1295,6 @@ function AdminPage() {
                     </button>
                   ))}
                 </div>
-                <Checkbox
-                  checked={menuDraft.available}
-                  label="Produit disponible"
-                  onChange={(checked) => setMenuDraft({ ...menuDraft, available: checked })}
-                />
                 <button className="admin-primary-button" type="submit">
                   {menuDraft.id ? 'Modifier produit' : 'Ajouter produit'}
                 </button>
@@ -1045,24 +1303,117 @@ function AdminPage() {
             <Panel title="Produits">
               <div className="admin-card-list">
                 {menuItems.map((item) => (
-                  <article className="admin-list-card" key={item.id}>
+                  <article className="admin-list-card menu-product" key={item.id}>
                     <img alt={item.name} src={item.imageUrl} />
                     <div>
                       <strong>{item.name}</strong>
                       <small>{item.category} - {item.station}</small>
                       <span>{formatPrice(Number(item.price || 0))} - {item.points} pts</span>
                     </div>
-                    <span className={item.available ? 'admin-pill success' : 'admin-pill muted'}>
-                      {item.available ? 'Disponible' : 'Indisponible'}
-                    </span>
                     <button className="admin-secondary-button" onClick={() => setMenuDraft(item)} type="button">
                       Editer
                     </button>
-                    <button className="admin-danger-button" onClick={() => runAdminAction(() => deleteAdminMenuItemApi(item.id), 'Produit desactive.')} type="button">
-                      Desactiver
+                    <button
+                      className="admin-danger-button outline"
+                      onClick={() =>
+                        runAdminAction(
+                          () => deleteAdminMenuItemPermanentApi(item.id),
+                          'Produit supprime definitivement.',
+                        )
+                      }
+                      type="button"
+                    >
+                      Supprimer definitivement
                     </button>
                   </article>
                 ))}
+              </div>
+            </Panel>
+          </section>
+        )}
+
+        {activeTab === 'stock' && (
+          <section className="admin-section">
+            <div className="admin-stock-overview">
+              <Panel title="Gestion du stock">
+                <div className="admin-account-summary">
+                  <span>{menuItems.length} produits</span>
+                  <span>{menuItems.filter((item) => item.available).length} disponibles</span>
+                  <span>{menuItems.filter((item) => !item.available).length} indisponibles</span>
+                </div>
+                <p className="admin-muted">
+                  Cette page gere uniquement la disponibilite et le stock. Les informations du plat restent dans la page Menu.
+                </p>
+              </Panel>
+              <Panel title="Regle de service">
+                <StatusLine label="Produit disponible" value="Visible client et serveur" />
+                <StatusLine label="Produit indisponible" value="Visible avec raison, mais non commandable" />
+              </Panel>
+            </div>
+
+            <Panel title="Produits et disponibilite">
+              <div className="admin-stock-grid">
+                {menuItems.map((item) => {
+                  const draft = getStockDraft(item);
+                  const isAvailable = Boolean(draft.available);
+                  return (
+                    <article className={`admin-stock-card ${isAvailable ? 'is-available' : 'is-unavailable'}`} key={item.id}>
+                      <img alt={item.name} src={item.imageUrl} />
+                      <div className="admin-stock-main">
+                        <div>
+                          <strong>{item.name}</strong>
+                          <small>{item.category} - {item.station}</small>
+                        </div>
+                        <span className={isAvailable ? 'admin-pill success' : 'admin-pill danger'}>
+                          {isAvailable ? 'Disponible' : 'Indisponible'}
+                        </span>
+                      </div>
+
+                      <div className="admin-stock-controls">
+                        <Field
+                          label="Quantite stock"
+                          min="0"
+                          type="number"
+                          value={draft.stockQuantity}
+                          onChange={(value) => updateStockDraft(item, { stockQuantity: value })}
+                          placeholder="Non suivi"
+                        />
+                        <Field
+                          label="Raison si indisponible"
+                          value={draft.unavailableReason}
+                          onChange={(value) => updateStockDraft(item, { unavailableReason: value })}
+                          placeholder="Rupture de stock, ingredient termine..."
+                        />
+                      </div>
+
+                      <div className="admin-stock-actions">
+                        {isAvailable ? (
+                          <button
+                            className="admin-danger-button"
+                            onClick={() => {
+                              updateStockDraft(item, { available: false, unavailableReason: draft.unavailableReason || 'Indisponible temporairement' });
+                              saveStockItem({ ...item, available: false, unavailableReason: draft.unavailableReason || 'Indisponible temporairement' }, false);
+                            }}
+                            type="button"
+                          >
+                            Rendre indisponible
+                          </button>
+                        ) : (
+                          <button
+                            className="admin-primary-button"
+                            onClick={() => saveStockItem(item, true)}
+                            type="button"
+                          >
+                            Rendre disponible
+                          </button>
+                        )}
+                        <button className="admin-secondary-button" onClick={() => saveStockItem(item)} type="button">
+                          Enregistrer stock
+                        </button>
+                      </div>
+                    </article>
+                  );
+                })}
               </div>
             </Panel>
           </section>
@@ -1168,6 +1519,11 @@ function AdminPage() {
         {activeTab === 'staff' && (
           <section className="admin-section admin-grid-2">
             <Panel title="Comptes staff">
+              <div className="admin-account-summary">
+                <span>{staff.length} comptes staff</span>
+                <span>{staff.filter((member) => member.active).length} actifs</span>
+                <span>{staff.filter((member) => member.role === 'WAITER').length} serveurs</span>
+              </div>
               <form className="admin-form" onSubmit={saveStaff}>
                 <Field label="Nom" value={staffDraft.name} onChange={(value) => setStaffDraft({ ...staffDraft, name: value })} />
                 <Field label="Telephone" value={staffDraft.phone} onChange={(value) => setStaffDraft({ ...staffDraft, phone: value })} />
@@ -1199,11 +1555,96 @@ function AdminPage() {
                     <button className="admin-secondary-button" onClick={() => setStaffDraft({ ...member, password: '' })} type="button">
                       Editer
                     </button>
-                    <button className="admin-danger-button" onClick={() => runAdminAction(() => deleteAdminStaffApi(member.id), 'Compte staff desactive.')} type="button">
+                    <button
+                      className="admin-danger-button"
+                      disabled={!member.active}
+                      onClick={() => runAdminAction(() => deleteAdminStaffApi(member.id), 'Compte staff desactive.')}
+                      type="button"
+                    >
                       Desactiver
+                    </button>
+                    <button
+                      className="admin-danger-button outline"
+                      onClick={() =>
+                        runAdminAction(
+                          () => deleteAdminStaffPermanentApi(member.id),
+                          'Compte staff supprime definitivement.',
+                        )
+                      }
+                      type="button"
+                    >
+                      Supprimer
                     </button>
                   </article>
                 ))}
+              </div>
+            </Panel>
+          </section>
+        )}
+
+        {activeTab === 'users' && (
+          <section className="admin-section">
+            <div className="admin-grid-2">
+              <Panel title="Comptes clients">
+                <div className="admin-account-summary">
+                  <span>{users.filter((user) => user.role === 'CLIENT').length} clients</span>
+                  <span>{users.filter((user) => user.role === 'CLIENT' && user.active).length} actifs</span>
+                  <span>{users.reduce((sum, user) => sum + Number(user.points || 0), 0)} points cumules</span>
+                </div>
+                <p className="admin-muted">
+                  Ces comptes correspondent aux clients qui se connectent par telephone et mot de passe pour garder leurs points.
+                </p>
+              </Panel>
+              <Panel title="Commandes compte / sans compte">
+                <ProgressRow label="Avec compte client" value={dashboard?.ordersWithAccount || 0} max={orders.length || 1} />
+                <ProgressRow label="Sans compte" value={dashboard?.ordersWithoutAccount || 0} max={orders.length || 1} />
+                <p className="admin-muted">
+                  Une commande avec compte contient un telephone client. Une commande sans compte vient du mode rapide QR.
+                </p>
+              </Panel>
+            </div>
+            <Panel title="Gestion utilisateurs">
+              <div className="admin-user-grid">
+                {users
+                  .filter((user) => user.role === 'CLIENT')
+                  .map((user) => (
+                    <article className="admin-user-card" key={user.id}>
+                      <div className="admin-user-avatar">{user.name?.slice(0, 2).toUpperCase() || 'CL'}</div>
+                      <div>
+                        <strong>{user.name}</strong>
+                        <small>{user.phone}</small>
+                        <span>{user.points || 0} points</span>
+                      </div>
+                      <span className={user.active ? 'admin-pill success' : 'admin-pill muted'}>
+                        {user.active ? 'Actif' : 'Desactive'}
+                      </span>
+                      <div className="admin-card-actions">
+                        <button
+                          className="admin-danger-button"
+                          disabled={!user.active}
+                          onClick={() => runAdminAction(() => deactivateAdminUserApi(user.id), 'Compte client desactive.')}
+                          type="button"
+                        >
+                          Desactiver
+                        </button>
+                        <button
+                          className="admin-danger-button outline"
+                          onClick={() =>
+                            runAdminAction(
+                              () => deleteAdminUserPermanentApi(user.id),
+                              'Compte client supprime definitivement.',
+                            )
+                          }
+                          type="button"
+                        >
+                          Supprimer
+                        </button>
+                      </div>
+                    </article>
+                  ))}
+                {users.filter((user) => user.role === 'CLIENT').length === 0 && (
+                  <p className="admin-muted">Aucun compte client pour le moment.</p>
+                )}
               </div>
             </Panel>
           </section>
@@ -1404,9 +1845,10 @@ function AdminPage() {
   );
 }
 
-function MetricCard({ label, value, tone = 'neutral' }) {
+function MetricCard({ icon = 'ID', label, value, tone = 'neutral' }) {
   return (
     <article className={`admin-metric ${tone}`}>
+      <i aria-hidden="true">{icon}</i>
       <span>{label}</span>
       <strong>{value}</strong>
     </article>
@@ -1446,6 +1888,105 @@ function StatusLine({ label, value }) {
   );
 }
 
+function FlowStep({ label, value, hint }) {
+  return (
+    <article className="admin-flow-step">
+      <span>{label}</span>
+      <strong>{value}</strong>
+      <small>{hint}</small>
+    </article>
+  );
+}
+
+function DashboardRealStats({ stats }) {
+  return (
+    <div className="admin-real-stats" aria-label="Statistiques operationnelles">
+      <article>
+        <span>Commandes payees</span>
+        <strong>{stats.paidCount}</strong>
+        <small>Historique charge</small>
+      </article>
+      <article>
+        <span>CA encaisse</span>
+        <strong>{formatPrice(stats.totalRevenue)}</strong>
+        <small>Total des commandes payees</small>
+      </article>
+      <article>
+        <span>Panier moyen</span>
+        <strong>{formatPrice(stats.averageBasket)}</strong>
+        <small>CA / commandes payees</small>
+      </article>
+      <article>
+        <span>A encaisser</span>
+        <strong>{stats.servedUnpaid}</strong>
+        <small>Commandes servies non payees</small>
+      </article>
+      <article>
+        <span>Comptes client</span>
+        <strong>{stats.accountRate}%</strong>
+        <small>Commandes rattachees a un compte</small>
+      </article>
+      <article>
+        <span>Menu disponible</span>
+        <strong>{stats.menuAvailabilityRate}%</strong>
+        <small>Produits actifs au menu</small>
+      </article>
+    </div>
+  );
+}
+
+function OrderSplitCard({ stats }) {
+  const accountPercent = Math.round((Number(stats?.withAccount || 0) / Math.max(1, Number(stats?.total || 1))) * 100);
+  const noAccountPercent = 100 - accountPercent;
+
+  return (
+    <div className="admin-split-card">
+      <div
+        className="admin-donut"
+        style={{
+          background: `conic-gradient(#1f7a76 0 ${accountPercent}%, #c76b42 ${accountPercent}% ${Math.min(100, accountPercent + noAccountPercent)}%, #e8dfca 0)`,
+        }}
+      >
+        <strong>{stats?.total || 0}</strong>
+        <span>commandes</span>
+      </div>
+      <div className="admin-split-legend">
+        <StatusLine label="Avec compte" value={stats?.withAccount || 0} />
+        <StatusLine label="Sans compte" value={stats?.withoutAccount || 0} />
+        <StatusLine label="QR client" value={stats?.clientQr || 0} />
+        <StatusLine label="Serveur assiste" value={stats?.serverAssisted || 0} />
+      </div>
+    </div>
+  );
+}
+
+function DashboardOrdersTable({ orders }) {
+  if (!orders || orders.length === 0) {
+    return <p className="admin-muted">Aucune commande recente.</p>;
+  }
+
+  return (
+    <div className="admin-orders-table">
+      <div className="admin-orders-table-head">
+        <span>Commande</span>
+        <span>Table</span>
+        <span>Source</span>
+        <span>Statut</span>
+        <span>Total</span>
+      </div>
+      {orders.map((order) => (
+        <div className="admin-orders-table-row" key={order.backendId || order.id}>
+          <strong data-label="Commande">{order.id}</strong>
+          <span data-label="Table">Table {order.table}</span>
+          <span data-label="Source">{order.sourceLabel || (order.accessMode === 'server-assisted' ? 'Serveur' : 'QR client')}</span>
+          <span className="admin-table-status" data-label="Statut">{orderStatusLabel(order.status)}</span>
+          <b data-label="Total">{formatPrice(Number(order.total || 0))}</b>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function Field({ label, value, onChange, type = 'text', ...inputProps }) {
   return (
     <label className="admin-field">
@@ -1462,7 +2003,7 @@ function ColorField({ label, value, onChange }) {
       {label}
       <div className="admin-color-field">
         <input aria-label={label} type="color" value={color} onChange={(event) => onChange(event.target.value)} />
-        <input value={color} onChange={(event) => onChange(event.target.value)} placeholder="#B89039" />
+        <input value={color} onChange={(event) => onChange(event.target.value)} placeholder="#1F7A76" />
       </div>
     </label>
   );
@@ -1507,3 +2048,4 @@ function ToggleAction({ active, label, onClick }) {
 }
 
 export default AdminPage;
+

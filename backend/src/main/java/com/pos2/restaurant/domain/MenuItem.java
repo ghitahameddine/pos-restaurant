@@ -46,6 +46,11 @@ public class MenuItem {
     @Column(nullable = false)
     private boolean available = true;
 
+    private Integer stockQuantity;
+
+    @Column(length = 500)
+    private String unavailableReason;
+
     protected MenuItem() {
     }
 
@@ -134,5 +139,21 @@ public class MenuItem {
 
     public void setAvailable(boolean available) {
         this.available = available;
+    }
+
+    public Integer getStockQuantity() {
+        return stockQuantity;
+    }
+
+    public void setStockQuantity(Integer stockQuantity) {
+        this.stockQuantity = stockQuantity;
+    }
+
+    public String getUnavailableReason() {
+        return unavailableReason;
+    }
+
+    public void setUnavailableReason(String unavailableReason) {
+        this.unavailableReason = unavailableReason;
     }
 }

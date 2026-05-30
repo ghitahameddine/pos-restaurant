@@ -47,6 +47,11 @@ public class KitchenItem {
     @Column(nullable = false)
     private boolean rewardItem = false;
 
+    @Column(length = 300)
+    private String cancellationReason;
+
+    private Instant cancelledAt;
+
     @Column(nullable = false)
     private Instant createdAt;
 
@@ -110,5 +115,19 @@ public class KitchenItem {
 
     public void setStatus(KitchenItemStatus status) {
         this.status = status;
+    }
+
+    public String getCancellationReason() {
+        return cancellationReason;
+    }
+
+    public Instant getCancelledAt() {
+        return cancelledAt;
+    }
+
+    public void cancel(String reason) {
+        this.status = KitchenItemStatus.CANCELLED;
+        this.cancellationReason = reason;
+        this.cancelledAt = Instant.now();
     }
 }

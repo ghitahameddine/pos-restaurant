@@ -2,6 +2,7 @@ package com.pos2.restaurant.service;
 
 import com.pos2.restaurant.dto.RealtimeEvent;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
@@ -45,6 +46,17 @@ public class RealtimeService {
         RealtimeEvent event = RealtimeEvent.of("TABLE_UPDATED", payload);
         messagingTemplate.convertAndSend("/topic/tables", event);
         broadcast(event);
+    }
+
+    public void publishMenu(Object payload) {
+        RealtimeEvent event = RealtimeEvent.of("MENU_UPDATED", payload);
+        messagingTemplate.convertAndSend("/topic/menu", event);
+        broadcast(event);
+    }
+
+    @Scheduled(fixedRate = 25000)
+    public void heartbeat() {
+        broadcast(RealtimeEvent.of("PING", "alive"));
     }
 
     private void broadcast(RealtimeEvent event) {

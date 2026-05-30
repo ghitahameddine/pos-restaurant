@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { menuCategories, menuProducts } from '../../data/menuProducts';
+import { menuProducts } from '../../data/menuProducts';
 import { formatPrice } from '../../utils/format';
 import {
   addStoredOrder,
@@ -13,6 +13,7 @@ import {
   clientUpdateApiOrder,
   createApiBillRequest,
   createApiOrder,
+  fetchMenuCatalogApi,
   fetchMyLoyaltyApi,
   redeemRewardApi,
   subscribeRealtime,
@@ -28,10 +29,31 @@ import ClientAuth from './ClientAuth';
 const ACCESS_STEP = 'access';
 const AUTH_STEP = 'auth';
 const MENU_STEP = 'menu';
-const CONFIRMATION_STEP = 'confirmation';
 const CLIENT_DRAFT_PREFIX = 'pos2-client-draft-';
 const PENDING_STATUS = 'En attente de validation serveur';
 const CANCELLED_STATUS = 'Annulee par le serveur';
+
+function mapCatalogProduct(item) {
+  const fallback = menuProducts.find((product) => Number(product.id) === Number(item.id)) || {};
+  return {
+    ...fallback,
+    id: item.id,
+    name: item.name,
+    category: item.category,
+    price: Number(item.price || 0),
+    points: Number(item.points || 0),
+    station: item.station,
+    description: item.description,
+    details: item.details || fallback.details || '',
+    image: item.imageUrl || fallback.image || '',
+    prepTime: fallback.prepTime || '10 min',
+    badge: item.available === false ? 'Indisponible' : fallback.badge || 'Maison',
+    accent: fallback.accent || '#b89039',
+    available: item.available !== false,
+    stockQuantity: item.stockQuantity ?? null,
+    unavailableReason: item.unavailableReason || '',
+  };
+}
 
 function getTableNumber() {
   const params = new URLSearchParams(window.location.search);
@@ -172,6 +194,140 @@ function applyRewardPreviewToOrder(order, reward) {
   return previewOrder;
 }
 
+function ClientIcon({ name, className = '' }) {
+  const icons = {
+    user: (
+      <>
+        <circle cx="12" cy="8" r="3.25" />
+        <path d="M5.5 20c.8-4 3-6 6.5-6s5.7 2 6.5 6" />
+      </>
+    ),
+    basket: (
+      <>
+        <path d="M4 9h16l-1.6 9H5.6L4 9Z" />
+        <path d="M8 9 12 4l4 5" />
+      </>
+    ),
+    menu: (
+      <>
+        <path d="M5 6h14" />
+        <path d="M5 12h14" />
+        <path d="M5 18h14" />
+      </>
+    ),
+    gift: (
+      <>
+        <path d="M4 10h16v10H4z" />
+        <path d="M12 10v10" />
+        <path d="M3 7h18v4H3z" />
+        <path d="M12 7c-1-4-6-4-6-1 0 1.6 2.2 2 6 1Z" />
+        <path d="M12 7c1-4 6-4 6-1 0 1.6-2.2 2-6 1Z" />
+      </>
+    ),
+    receipt: (
+      <>
+        <path d="M7 3h10v18l-2-1.4L12 21l-3-1.4L7 21V3Z" />
+        <path d="M10 8h4" />
+        <path d="M10 12h4" />
+        <path d="M10 16h3" />
+      </>
+    ),
+    more: (
+      <>
+        <circle cx="5" cy="12" r="1.6" fill="currentColor" stroke="none" />
+        <circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none" />
+        <circle cx="19" cy="12" r="1.6" fill="currentColor" stroke="none" />
+      </>
+    ),
+    burger: (
+      <>
+        <path d="M4 11c.2-4 3.3-6 8-6s7.8 2 8 6H4Z" />
+        <path d="M4 14h16" />
+        <path d="M5 17c0 1.2 1 2 2.2 2h9.6c1.2 0 2.2-.8 2.2-2H5Z" />
+      </>
+    ),
+    pizza: (
+      <>
+        <path d="M12 3 4 19h16L12 3Z" />
+        <path d="M6 16h12" />
+        <circle cx="11" cy="11" r="1" fill="currentColor" stroke="none" />
+        <circle cx="14" cy="14" r="1" fill="currentColor" stroke="none" />
+      </>
+    ),
+    drink: (
+      <>
+        <path d="M7 8h10l-1 12H8L7 8Z" />
+        <path d="M6 5h12" />
+        <path d="m13 8 3-5" />
+      </>
+    ),
+    salad: (
+      <>
+        <path d="M5 11h14c0 5-3 8-7 8s-7-3-7-8Z" />
+        <path d="M8 9c0-2 2-3 4-1 0-3 4-3 4 1" />
+      </>
+    ),
+    dessert: (
+      <>
+        <path d="M6 12h12l-1 7H7l-1-7Z" />
+        <path d="M7 12c.2-4 9.8-4 10 0" />
+        <path d="M12 7V5" />
+      </>
+    ),
+    table: (
+      <>
+        <path d="M4 9h16v4H4z" />
+        <path d="M7 13v7" />
+        <path d="M17 13v7" />
+      </>
+    ),
+    clock: (
+      <>
+        <circle cx="12" cy="12" r="8.5" />
+        <path d="M12 7v5l3 2" />
+      </>
+    ),
+    plus: (
+      <>
+        <path d="M12 5v14" />
+        <path d="M5 12h14" />
+      </>
+    ),
+    arrow: <path d="M5 12h14m-6-6 6 6-6 6" />,
+  };
+
+  return (
+    <svg
+      aria-hidden="true"
+      className={`client-icon ${className}`}
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="1.8"
+      viewBox="0 0 24 24"
+    >
+      {icons[name] || icons.menu}
+    </svg>
+  );
+}
+
+const CLIENT_CATEGORY_ICONS = {
+  Tous: 'menu',
+  Burgers: 'burger',
+  Pizzas: 'pizza',
+  Boissons: 'drink',
+  Tacos: 'burger',
+  Salades: 'salad',
+  Desserts: 'dessert',
+};
+
+const GUEST_REWARD_PREVIEW = [
+  { name: "Jus d'orange offert", points: 40, icon: 'drink' },
+  { name: 'Dessert offert', points: 100, icon: 'dessert' },
+  { name: 'Reduction 20%', points: 200, icon: 'gift' },
+];
+
 function MenuPage() {
   const tableNumber = getTableNumber();
   const draftLoadedRef = useRef(false);
@@ -186,6 +342,7 @@ function MenuPage() {
   const [activeCategory, setActiveCategory] = useState('Tous');
   const [selectedProduct, setSelectedProduct] = useState(menuProducts[0]);
   const [detailProduct, setDetailProduct] = useState(null);
+  const [historyDetailOrder, setHistoryDetailOrder] = useState(null);
   const [rewardsProfile, setRewardsProfile] = useState(() => getDefaultLoyaltyRewards());
   const [loyaltyMessage, setLoyaltyMessage] = useState('');
   const [loyaltyError, setLoyaltyError] = useState('');
@@ -195,21 +352,42 @@ function MenuPage() {
   const [sessionOrders, setSessionOrders] = useState([]);
   const [isLinkExpired, setIsLinkExpired] = useState(false);
   const [qrToken, setQrToken] = useState(() => getQrTokenFromUrl());
-  const [authMenuOpen, setAuthMenuOpen] = useState(false);
   const [cartOpen, setCartOpen] = useState(false);
+  const [clientTab, setClientTab] = useState('menu');
+  const [menuCatalog, setMenuCatalog] = useState(() => menuProducts.map((product) => ({
+    ...product,
+    available: product.available !== false,
+    unavailableReason: product.unavailableReason || '',
+  })));
 
   const subtotal = useMemo(
     () => cart.reduce((sum, item) => sum + item.price * item.quantity, 0),
     [cart],
   );
 
+  const customerMenuCatalog = useMemo(
+    () => menuCatalog.filter((product) => !['test', 'tests'].includes(String(product.category || '').toLowerCase())),
+    [menuCatalog],
+  );
+
   const filteredProducts = useMemo(() => {
     if (activeCategory === 'Tous') {
-      return menuProducts;
+      return customerMenuCatalog;
     }
 
-    return menuProducts.filter((product) => product.category === activeCategory);
-  }, [activeCategory]);
+    return customerMenuCatalog.filter((product) => product.category === activeCategory);
+  }, [activeCategory, customerMenuCatalog]);
+
+  const productCategories = useMemo(
+    () => ['Tous', ...new Set(customerMenuCatalog.map((product) => product.category))],
+    [customerMenuCatalog],
+  );
+
+  useEffect(() => {
+    if (!productCategories.includes(activeCategory)) {
+      setActiveCategory('Tous');
+    }
+  }, [activeCategory, productCategories]);
 
   const nextReward = useMemo(() => {
     const orderedRewards = [...(rewardsProfile.rewards || [])].sort(
@@ -290,6 +468,87 @@ function MenuPage() {
     );
   }, [sessionOrders, submittedOrder]);
 
+  const openHistoryOrderDetails = (transaction) => {
+    if (!transaction?.orderNumber) return;
+
+    const knownOrders = [...visibleSessionOrders, ...getStoredOrders()];
+    const matchedOrder = knownOrders.find((order) => {
+      const possibleIds = [order.id, order.orderNumber, order.backendId].filter(Boolean).map(String);
+      return possibleIds.includes(String(transaction.orderNumber));
+    });
+
+    setHistoryDetailOrder({
+      id: transaction.orderNumber,
+      table: matchedOrder?.table || tableNumber,
+      status: matchedOrder?.status || 'Commande payee',
+      items: matchedOrder?.items || [],
+      rewardNote: matchedOrder?.rewardNote || transaction.rewardName || '',
+      total: matchedOrder?.total ?? matchedOrder?.totalFinal ?? null,
+      createdAt: transaction.createdAt,
+      points: transaction.points,
+      type: transaction.type,
+    });
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadMenuCatalog = async () => {
+      try {
+        const nextCatalog = await fetchMenuCatalogApi();
+        if (cancelled || !Array.isArray(nextCatalog)) return;
+
+        const mappedCatalog = nextCatalog.map(mapCatalogProduct);
+        setMenuCatalog(mappedCatalog);
+        const visibleCatalog = mappedCatalog.filter(
+          (product) => !['test', 'tests'].includes(String(product.category || '').toLowerCase()),
+        );
+        let removedUnavailableItem = false;
+        setCart((currentCart) => {
+          const nextCart = currentCart
+            .map((cartItem) => {
+              if (cartItem.isRewardItem) return cartItem;
+              const latestProduct = mappedCatalog.find((product) => Number(product.id) === Number(cartItem.id));
+              if (!latestProduct) return cartItem;
+              if (latestProduct.available === false) {
+                removedUnavailableItem = true;
+                return null;
+              }
+              return { ...cartItem, ...latestProduct, quantity: cartItem.quantity };
+            })
+            .filter(Boolean);
+
+          return nextCart;
+        });
+        if (removedUnavailableItem) {
+          setLoyaltyError('Un produit devenu indisponible a ete retire du panier.');
+        }
+        setSelectedProduct((currentProduct) => {
+          const currentMatch = visibleCatalog.find((product) => product.id === currentProduct?.id);
+          return currentMatch || visibleCatalog.find((product) => product.available) || visibleCatalog[0] || currentProduct;
+        });
+        setDetailProduct((currentProduct) => {
+          if (!currentProduct) return currentProduct;
+          return mappedCatalog.find((product) => Number(product.id) === Number(currentProduct.id)) || currentProduct;
+        });
+      } catch (error) {
+        console.warn('Menu backend indisponible, menu local utilise.', error);
+      }
+    };
+
+    loadMenuCatalog();
+    const stopMenuRealtime = subscribeRealtime({
+      onMenu: loadMenuCatalog,
+    });
+    const menuRefreshId = window.setInterval(loadMenuCatalog, 30000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(menuRefreshId);
+      stopMenuRealtime();
+    };
+  }, []);
+
   useEffect(() => {
     if (!submittedOrderId) return undefined;
 
@@ -320,7 +579,10 @@ function MenuPage() {
         return;
       }
 
-      setStep(draft.step || MENU_STEP);
+      setStep(draft.step === 'confirmation' ? MENU_STEP : draft.step || MENU_STEP);
+      if (draft.step === 'confirmation') {
+        setClientTab('orders');
+      }
       setAccessMode(draft.accessMode || 'direct');
       setClientName(draft.clientName || '');
       setClientPhone(draft.clientPhone || '');
@@ -531,6 +793,11 @@ function MenuPage() {
   };
 
   const addToCart = (product) => {
+    if (product.available === false) {
+      setLoyaltyError(product.unavailableReason || 'Ce produit est indisponible pour le moment.');
+      return;
+    }
+
     setCart((currentCart) => {
       const existingProduct = currentCart.find((item) => item.id === product.id);
 
@@ -548,10 +815,9 @@ function MenuPage() {
     setCartOpen(true);
   };
 
-  const viewSubmittedOrder = () => {
-    if (!submittedOrder) return;
-    setAuthMenuOpen(false);
-    setStep(CONFIRMATION_STEP);
+  const changeClientTab = (nextTab) => {
+    setClientTab(nextTab);
+    setCartOpen(false);
   };
 
   const logoutClient = () => {
@@ -559,20 +825,10 @@ function MenuPage() {
     setAccessMode('direct');
     setClientName('');
     setClientPhone('');
-    setAuthMenuOpen(false);
     setRewardsProfile(getDefaultLoyaltyRewards());
     setLoyaltyMessage('');
     setLoyaltyError('');
     setSelectedRewardId(null);
-    setStep(MENU_STEP);
-  };
-
-  const returnToMenuForAnotherOrder = () => {
-    setCart([]);
-    setSelectedRewardId(null);
-    setOrderComment('');
-    setEditingOrderId(null);
-    setBillRequestStatus('');
     setStep(MENU_STEP);
   };
 
@@ -587,7 +843,6 @@ function MenuPage() {
   const continueToMenu = (mode) => {
     setAccessMode(mode);
     setIsLinkExpired(false);
-    setAuthMenuOpen(false);
 
     if (mode === 'sign-in' || mode === 'sign-up') {
       setClientName(getStoredClientAuth()?.name || '');
@@ -606,32 +861,47 @@ function MenuPage() {
       totalPoints: typeof points === 'number' ? points : 0,
     });
     setSelectedRewardId(null);
-    setAuthMenuOpen(false);
     setStep(MENU_STEP);
   };
 
   const startRewards = () => {
     setAccessMode('sign-in');
     setClientName(getStoredClientAuth()?.name || '');
-    setAuthMenuOpen(false);
     setStep(AUTH_STEP);
   };
 
   const returnFromAuthToMenu = () => {
+    setClientTab('menu');
     setStep(MENU_STEP);
   };
 
-  const claimCurrentOrderRewards = (mode) => {
-    continueToMenu(mode);
-  };
-
   const openProductDetails = (product) => {
+    if (product.available === false) {
+      setLoyaltyError(product.unavailableReason || 'Ce produit est indisponible pour le moment.');
+      return;
+    }
+
     setSelectedProduct(product);
     setDetailProduct(product);
   };
 
   const confirmOrder = async () => {
     if (cart.length === 0) return;
+    const unavailableItem = cart
+      .filter((item) => !item.isRewardItem)
+      .find((item) => {
+        const latestProduct = menuCatalog.find((product) => Number(product.id) === Number(item.id));
+        return latestProduct?.available === false;
+      });
+
+    if (unavailableItem) {
+      const latestProduct = menuCatalog.find((product) => Number(product.id) === Number(unavailableItem.id));
+      setLoyaltyError(latestProduct?.unavailableReason || `${unavailableItem.name} est indisponible.`);
+      setCart((currentCart) =>
+        currentCart.filter((item) => item.isRewardItem || Number(item.id) !== Number(unavailableItem.id)),
+      );
+      return;
+    }
 
     const createdAt = new Date().toISOString();
     const existingOrder = editingOrderId
@@ -720,7 +990,9 @@ function MenuPage() {
     setCart([]);
     setSelectedRewardId(null);
     setOrderComment('');
-    setStep(CONFIRMATION_STEP);
+    setCartOpen(false);
+    setClientTab('orders');
+    setStep(MENU_STEP);
   };
 
   const cancelPendingOrder = async (order) => {
@@ -830,19 +1102,42 @@ function MenuPage() {
 
   return (
     <main className="client-page">
-      <header className={`client-header ${step === MENU_STEP && !isLinkExpired ? 'client-header-rich' : ''}`}>
-        <div className="client-header-copy">
-          <p className="eyebrow">Commande client QR</p>
-          <h1>Menu du restaurant</h1>
-          <p className="client-header-summary">
-            Commande digitale a table, suivi clair, validation rapide par le serveur.
-          </p>
-          <div className="client-header-meta">
-            <p className="table-label">Table numero {tableNumber}</p>
-            <p className="service-chip">{isClientAuthenticated ? 'Compte client' : 'Commande rapide'}</p>
+      {step === MENU_STEP && !isLinkExpired ? (
+        <header className="client-app-bar">
+          <div className="client-brand">
+            <div className="client-brand-mark">P2</div>
+            <div>
+              <strong>POS2</strong>
+              <span>Table {tableNumber}</span>
+            </div>
           </div>
-        </div>
-      </header>
+          <div className="client-app-actions">
+            <button
+              type="button"
+              onClick={() => changeClientTab('more')}
+              aria-label={isClientAuthenticated ? 'Ouvrir mon compte' : 'Se connecter'}
+            >
+              <ClientIcon name="user" />
+              <span>{isClientAuthenticated ? clientName || 'Compte' : 'Connexion'}</span>
+            </button>
+            <button className="client-cart-action" type="button" onClick={scrollToCart} aria-label="Voir le panier">
+              <ClientIcon name="basket" />
+              <span>Panier</span>
+              <strong>{cartCount}</strong>
+            </button>
+          </div>
+        </header>
+      ) : (
+        <header className="client-header">
+          <div className="client-header-copy">
+            <p className="eyebrow">Commande client QR</p>
+            <h1>Menu du restaurant</h1>
+            <div className="client-header-meta">
+              <p className="table-label">Table numero {tableNumber}</p>
+            </div>
+          </div>
+        </header>
+      )}
 
       {isLinkExpired && (
         <section className="access-panel session-panel">
@@ -891,15 +1186,6 @@ function MenuPage() {
               <span>Voir le menu et envoyer la commande au serveur.</span>
             </button>
           </div>
-
-          <ClientOrdersPanel
-            orders={visibleSessionOrders}
-            profile={rewardsProfile}
-            onRequestBill={requestBill}
-            onCancelOrder={cancelPendingOrder}
-            onEditOrder={editPendingOrder}
-            billRequestStatus={billRequestStatus}
-          />
         </section>
       )}
 
@@ -914,66 +1200,28 @@ function MenuPage() {
       )}
 
       {step === MENU_STEP && !isLinkExpired && (
-        <div className="menu-layout">
-          <section className="menu-section">
-            <div className="client-overview-grid">
+        <div className={`menu-layout client-app-layout client-tab-${clientTab}`}>
+          <section className="menu-section client-app-content">
+            {clientTab === 'more' && (
               <section className="client-auth-bar">
                 <div className="client-auth-copy">
-                  <p className="eyebrow">Compte client</p>
+                  <p className="eyebrow">Mon compte</p>
                   {accessMode === 'direct' ? (
                     <>
-                      <h2>Commande rapide</h2>
-                      <p>Connecte-toi seulement si tu veux garder tes points et ton historique.</p>
+                      <h2>Commande sans compte</h2>
+                      <p>Connecte-toi ou inscris-toi pour cumuler tes points et retrouver ton historique.</p>
                     </>
                   ) : (
                     <>
-                      <h2>{clientName || 'Compte client'}, fidelite active</h2>
+                      <h2>Bonjour {clientName || 'client'}</h2>
                       <p>Les points sont ajoutes apres paiement uniquement.</p>
                     </>
                   )}
                 </div>
-                <div className="client-auth-actions" aria-label="Choix compte client">
-                  <button
-                    className="hamburger-menu-button"
-                    type="button"
-                    aria-expanded={authMenuOpen}
-                    aria-label="Ouvrir le menu client"
-                    onClick={() => setAuthMenuOpen((isOpen) => !isOpen)}
-                  >
-                    Menu
-                  </button>
-                  {authMenuOpen && (
-                    <div className="client-auth-menu">
-                      {isClientAuthenticated ? (
-                        <button type="button" onClick={logoutClient}>
-                          Deconnecter
-                        </button>
-                      ) : (
-                        <>
-                          <button type="button" onClick={() => continueToMenu('sign-up')}>
-                            S'inscrire
-                          </button>
-                          <button type="button" onClick={() => continueToMenu('sign-in')}>
-                            Se connecter
-                          </button>
-                          <button type="button" onClick={() => continueToMenu('direct')}>
-                            Commande rapide
-                          </button>
-                        </>
-                      )}
-                      <button
-                        className="view-order-button"
-                        disabled={!submittedOrder}
-                        type="button"
-                        onClick={viewSubmittedOrder}
-                      >
-                        Voir ma commande
-                      </button>
-                    </div>
-                  )}
-                </div>
               </section>
+            )}
 
+            {clientTab === 'loyalty' && (
               <section className="reward-strip">
                 <div className="reward-strip-header">
                   <div className="reward-strip-copy">
@@ -1041,9 +1289,31 @@ function MenuPage() {
                   </div>
                 )}
               </section>
-            </div>
+            )}
 
-            {isClientAuthenticated &&
+            {clientTab === 'loyalty' && !isClientAuthenticated && (
+              <section className="client-reward-preview">
+                <div className="section-heading compact-section-heading">
+                  <h2>Recompenses populaires</h2>
+                  <p>Inscris-toi gratuitement pour commencer a debloquer tes avantages.</p>
+                </div>
+                <div className="client-preview-grid">
+                  {GUEST_REWARD_PREVIEW.map((reward) => (
+                    <article className="client-preview-card" key={reward.name}>
+                      <ClientIcon name={reward.icon} />
+                      <strong>{reward.name}</strong>
+                      <span>{reward.points} pts</span>
+                    </article>
+                  ))}
+                </div>
+                <button className="primary-button client-reward-join" type="button" onClick={() => continueToMenu('sign-up')}>
+                  Creer mon compte fidelite
+                  <ClientIcon name="arrow" />
+                </button>
+              </section>
+            )}
+
+            {clientTab === 'loyalty' && isClientAuthenticated &&
               ((rewardsProfile.rewards || []).length > 0 || loyaltyMessage || loyaltyError) && (
               <section className="client-loyalty-panel">
                 <div className="section-heading compact-section-heading">
@@ -1068,6 +1338,7 @@ function MenuPage() {
                         className={`client-reward-card ${isSelected ? 'client-reward-card-active' : ''}`}
                         key={reward.id}
                       >
+                        <ClientIcon name={reward.type === 'DISCOUNT' ? 'gift' : 'dessert'} className="reward-card-icon" />
                         <div className="client-reward-card-copy">
                           <span className="client-reward-type">
                             {reward.type === 'DISCOUNT' ? 'Reduction' : 'Article offert'}
@@ -1104,6 +1375,8 @@ function MenuPage() {
               </section>
             )}
 
+            {clientTab === 'menu' && (
+              <>
             <div className="menu-hero">
               <div
                 className="menu-hero-image"
@@ -1111,49 +1384,66 @@ function MenuPage() {
                 aria-hidden="true"
               />
               <div className="menu-hero-content">
-                <p className="eyebrow">Selection du moment</p>
+                <p className="eyebrow">Suggestion populaire</p>
                 <div className="menu-hero-copy">
                   <h2>{selectedProduct.name}</h2>
                   <p>{selectedProduct.description}</p>
                 </div>
                 <div className="menu-hero-footer">
                   <div className="hero-stats">
-                    <span>{selectedProduct.prepTime}</span>
-                    <span>{getEstimatedProductPoints(selectedProduct.price)} pts</span>
+                    <span><ClientIcon name="clock" />{selectedProduct.prepTime}</span>
+                    <span><ClientIcon name="gift" />{getEstimatedProductPoints(selectedProduct.price)} pts</span>
                     <span className="price-badge">{formatPrice(selectedProduct.price)}</span>
                   </div>
-                  <button type="button" onClick={() => addToCart(selectedProduct)}>
-                    Ajouter au panier
+                  <button
+                    disabled={selectedProduct.available === false}
+                    type="button"
+                    onClick={() => addToCart(selectedProduct)}
+                  >
+                    {selectedProduct.available === false ? 'Indisponible' : 'Ajouter au panier'}
                   </button>
                 </div>
               </div>
             </div>
 
-            {accessMode !== 'direct' && (
-              <label className="field">
-                Nom du client
-                <input
-                  onChange={(event) => setClientName(event.target.value)}
-                  placeholder="Ex: Pablo"
-                  type="text"
-                  value={clientName}
-                />
-              </label>
-            )}
+            <div className="client-service-highlights" aria-label="Avantages du service">
+              <article>
+                <ClientIcon name="table" />
+                <div>
+                  <strong>Commande a table</strong>
+                  <span>Table {tableNumber}</span>
+                </div>
+              </article>
+              <article>
+                <ClientIcon name="receipt" />
+                <div>
+                  <strong>Suivi en direct</strong>
+                  <span>Depuis mes commandes</span>
+                </div>
+              </article>
+              <article>
+                <ClientIcon name="gift" />
+                <div>
+                  <strong>Fidelite</strong>
+                  <span>1 pt / 10 MAD payes</span>
+                </div>
+              </article>
+            </div>
 
             <div className="section-heading">
-              <h2>Produits disponibles</h2>
-              <p>Explore les categories, consulte les details, puis ajoute au panier.</p>
+              <h2>Notre menu</h2>
+              <p>Choisis tes produits, personnalise avec un commentaire et commande a table.</p>
             </div>
 
             <div className="category-tabs" aria-label="Categories du menu">
-              {menuCategories.map((category) => (
+              {productCategories.map((category) => (
                 <button
                   className={activeCategory === category ? 'active' : ''}
                   key={category}
                   onClick={() => setActiveCategory(category)}
                   type="button"
                 >
+                  <ClientIcon name={CLIENT_CATEGORY_ICONS[category] || 'menu'} />
                   {category}
                 </button>
               ))}
@@ -1162,7 +1452,7 @@ function MenuPage() {
             <div className="product-list">
               {filteredProducts.map((product) => (
                 <article
-                  className="product-card"
+                  className={`product-card ${product.available === false ? 'product-card-unavailable' : ''}`}
                   key={product.id}
                   style={{ '--product-accent': product.accent }}
                 >
@@ -1178,26 +1468,158 @@ function MenuPage() {
                     </div>
                     <h3>{product.name}</h3>
                     <p>{product.description}</p>
+                    {product.available === false && (
+                      <p className="product-unavailable-reason">
+                        {product.unavailableReason || 'Indisponible temporairement'}
+                      </p>
+                    )}
                     <div className="product-details">
-                      <span>{product.prepTime}</span>
-                      <span>{getEstimatedProductPoints(product.price)} pts</span>
+                      <span><ClientIcon name="clock" />{product.prepTime}</span>
+                      <span><ClientIcon name="gift" />{getEstimatedProductPoints(product.price)} pts</span>
                     </div>
                     <small>{product.details}</small>
                   </div>
                   <footer>
                     <strong>{formatPrice(product.price)}</strong>
                     <div className="product-actions">
-                      <button type="button" onClick={() => openProductDetails(product)}>
+                      <button
+                        disabled={product.available === false}
+                        type="button"
+                        onClick={() => openProductDetails(product)}
+                      >
                         Details
                       </button>
-                      <button type="button" onClick={() => addToCart(product)}>
-                        Ajouter
+                      <button
+                        disabled={product.available === false}
+                        type="button"
+                        onClick={() => addToCart(product)}
+                      >
+                        {product.available !== false && <ClientIcon name="plus" />}
+                        {product.available === false ? 'Indisponible' : 'Ajouter'}
                       </button>
                     </div>
                   </footer>
                 </article>
               ))}
             </div>
+              </>
+            )}
+
+            {clientTab === 'orders' && (
+              <section className="client-tab-orders">
+                <div className="section-heading">
+                  <h2>Mes commandes</h2>
+                  <p>Suivi de ta table, modifications disponibles avant validation et demande d'addition.</p>
+                </div>
+                {visibleSessionOrders.length === 0 ? (
+                  <div className="client-empty-state">
+                    <ClientIcon name="receipt" className="client-empty-icon" />
+                    <strong>Aucune commande en cours</strong>
+                    <p>Ajoute des produits depuis le menu pour commencer.</p>
+                    <button type="button" className="primary-button" onClick={() => changeClientTab('menu')}>
+                      Voir le menu
+                      <ClientIcon name="arrow" />
+                    </button>
+                  </div>
+                ) : (
+                  <ClientOrdersPanel
+                    orders={visibleSessionOrders}
+                    profile={rewardsProfile}
+                    onRequestBill={requestBill}
+                    onCancelOrder={cancelPendingOrder}
+                    onEditOrder={editPendingOrder}
+                    billRequestStatus={billRequestStatus}
+                  />
+                )}
+              </section>
+            )}
+
+            {clientTab === 'more' && (
+              <section className="client-more-list" aria-label="Plus d'options">
+                <button type="button" onClick={() => changeClientTab('orders')}>
+                  <ClientIcon name="receipt" />
+                  <div>
+                    <span>Mes commandes</span>
+                    <small>Suivre ou demander l'addition</small>
+                  </div>
+                  <ClientIcon name="arrow" />
+                </button>
+                <button type="button" onClick={() => changeClientTab('loyalty')}>
+                  <ClientIcon name="gift" />
+                  <div>
+                    <span>Fidelite et recompenses</span>
+                    <small>{isClientAuthenticated ? `${rewardsProfile.totalPoints} points disponibles` : 'Connecte-toi pour commencer'}</small>
+                  </div>
+                  <ClientIcon name="arrow" />
+                </button>
+                <button type="button" onClick={() => changeClientTab('history')}>
+                  <ClientIcon name="receipt" />
+                  <div>
+                    <span>Historique</span>
+                    <small>{isClientAuthenticated ? 'Voir mes mouvements et commandes' : 'Connexion necessaire pour l historique'}</small>
+                  </div>
+                  <ClientIcon name="arrow" />
+                </button>
+                {!isClientAuthenticated ? (
+                  <>
+                    <button type="button" onClick={() => continueToMenu('sign-in')}>
+                      <ClientIcon name="user" />
+                      <div>
+                        <span>Se connecter</span>
+                        <small>Retrouver mon compte</small>
+                      </div>
+                      <ClientIcon name="arrow" />
+                    </button>
+                    <button type="button" onClick={() => continueToMenu('sign-up')}>
+                      <ClientIcon name="gift" />
+                      <div>
+                        <span>Creer un compte</span>
+                        <small>Activer la fidelite</small>
+                      </div>
+                      <ClientIcon name="arrow" />
+                    </button>
+                  </>
+                ) : (
+                  <button type="button" onClick={logoutClient}>
+                    <ClientIcon name="user" />
+                    <div>
+                      <span>Se deconnecter</span>
+                      <small>Fermer la session du compte</small>
+                    </div>
+                    <ClientIcon name="arrow" />
+                  </button>
+                )}
+                <div className="client-table-information">
+                  <ClientIcon name="table" />
+                  <div>
+                    <strong>Commande sur place</strong>
+                    <span>Table {tableNumber} - Session QR active</span>
+                  </div>
+                </div>
+              </section>
+            )}
+
+            {clientTab === 'history' && (
+              <section className="client-history-panel">
+                <div className="section-heading">
+                  <h2>Historique</h2>
+                  <p>Retrouve les mouvements de fidelite et les commandes liees a ton compte.</p>
+                </div>
+                {!isClientAuthenticated ? (
+                  <div className="client-empty-state client-history-empty">
+                    <ClientIcon name="user" className="client-empty-icon" />
+                    <strong>Connecte-toi pour voir ton historique</strong>
+                    <p>Les commandes faites sans compte restent disponibles seulement dans cette session QR.</p>
+                    <button type="button" className="primary-button" onClick={() => continueToMenu('sign-in')}>
+                      Se connecter
+                      <ClientIcon name="arrow" />
+                    </button>
+                  </div>
+                ) : (
+                  <ClientHistoryPanel profile={rewardsProfile} onOpenDetails={openHistoryOrderDetails} />
+                )}
+              </section>
+            )}
           </section>
 
           {cartOpen && (
@@ -1308,71 +1730,29 @@ function MenuPage() {
             onClick={scrollToCart}
             aria-label="Voir le panier"
           >
-            <span aria-hidden="true">🛒</span>
+            <ClientIcon name="basket" />
             <strong>{cartCount}</strong>
           </button>
-        </div>
-      )}
-
-      {step === CONFIRMATION_STEP && submittedOrder && (
-        <section className="confirmation-panel confirmation-panel-clean">
-          <div className="confirmation-hero-card">
-            <div>
-              <p className="eyebrow">Commande envoyee</p>
-              <h2>Table {submittedOrder.table}</h2>
-              <p>
-                La commande est visible sur la tablette serveur. Garde cette page ouverte pour
-                suivre le statut ou demander l'addition.
-              </p>
-              <span className="confirmation-status-chip">{submittedOrder.status}</span>
-            </div>
-            <div className="confirmation-live-card">
-              <span>Suivi</span>
-              <strong>Serveur</strong>
-              <small>Mise a jour automatique</small>
-            </div>
-          </div>
-
-          <div className="confirmation-actions">
-            <button className="primary-button" type="button" onClick={returnToMenuForAnotherOrder}>
-              Retour au menu
+          <nav className="client-bottom-nav" aria-label="Navigation client">
+            <button className={clientTab === 'menu' ? 'active' : ''} type="button" onClick={() => changeClientTab('menu')}>
+              <ClientIcon name="burger" />
+              Menu
             </button>
-          </div>
-
-          <ClientOrdersPanel
-            orders={visibleSessionOrders}
-            profile={rewardsProfile}
-            onRequestBill={requestBill}
-            onCancelOrder={cancelPendingOrder}
-            onEditOrder={editPendingOrder}
-            billRequestStatus={billRequestStatus}
-          />
-
-          {accessMode === 'direct' ? (
-            <div className="reward-callout">
-              <strong>Tu commandes sans compte</strong>
-              <span>
-                Cree un compte ou connecte-toi la prochaine fois pour garder tes points et gagner
-                un soda, une glace ou un menu gratuit.
-              </span>
-              <div className="reward-actions">
-                <button type="button" onClick={() => claimCurrentOrderRewards('sign-in')}>
-                  Sign in et garder mes points
-                </button>
-                <button type="button" onClick={() => claimCurrentOrderRewards('sign-up')}>
-                  Sign up maintenant
-                </button>
-              </div>
-            </div>
-          ) : (
-            <div className="reward-callout success">
-              <strong>Points credites apres paiement</strong>
-              <span>
-                Cette commande peut rapporter environ {submittedOrder.points} point(s) si elle est payee.
-              </span>
-            </div>
-          )}
-        </section>
+            <button className={clientTab === 'loyalty' ? 'active' : ''} type="button" onClick={() => changeClientTab('loyalty')}>
+              <ClientIcon name="gift" />
+              Fidelite
+            </button>
+            <button className={clientTab === 'orders' ? 'active' : ''} type="button" onClick={() => changeClientTab('orders')}>
+              <ClientIcon name="receipt" />
+              {visibleSessionOrders.length > 0 && <strong className="client-nav-count">{visibleSessionOrders.length}</strong>}
+              Commandes
+            </button>
+            <button className={['more', 'history'].includes(clientTab) ? 'active' : ''} type="button" onClick={() => changeClientTab('more')}>
+              <ClientIcon name="more" />
+              Plus
+            </button>
+          </nav>
+        </div>
       )}
 
       {detailProduct && (
@@ -1394,6 +1774,11 @@ function MenuPage() {
               <p className="eyebrow">{detailProduct.category}</p>
               <h2>{detailProduct.name}</h2>
               <p>{detailProduct.description}</p>
+              {detailProduct.available === false && (
+                <p className="product-unavailable-reason">
+                  {detailProduct.unavailableReason || 'Indisponible temporairement'}
+                </p>
+              )}
               <div className="hero-stats">
                 <span>{detailProduct.prepTime}</span>
                 <span>{getEstimatedProductPoints(detailProduct.price)} pts</span>
@@ -1417,19 +1802,135 @@ function MenuPage() {
               </div>
               <button
                 className="primary-button"
+                disabled={detailProduct.available === false}
                 type="button"
                 onClick={() => {
                   addToCart(detailProduct);
                   setDetailProduct(null);
                 }}
               >
-                Ajouter au panier
+                {detailProduct.available === false ? 'Indisponible' : 'Ajouter au panier'}
               </button>
             </div>
           </section>
         </div>
       )}
+
+      {historyDetailOrder && (
+        <div className="product-detail-backdrop" role="presentation">
+          <section className="client-history-detail-panel" aria-label={`Details commande ${historyDetailOrder.id}`}>
+            <button
+              className="detail-close-button"
+              type="button"
+              onClick={() => setHistoryDetailOrder(null)}
+            >
+              Fermer
+            </button>
+            <div className="history-detail-header">
+              <span>Commande</span>
+              <h2>{historyDetailOrder.id}</h2>
+              <p>Table {historyDetailOrder.table}</p>
+            </div>
+            <div className="history-detail-meta">
+              <span>{historyDetailOrder.status}</span>
+              <strong>
+                {historyDetailOrder.type === 'EARNED' ? '+' : '-'}
+                {Math.abs(Number(historyDetailOrder.points || 0))} pts
+              </strong>
+            </div>
+            {historyDetailOrder.createdAt && (
+              <p className="history-detail-date">
+                {new Date(historyDetailOrder.createdAt).toLocaleString('fr-FR')}
+              </p>
+            )}
+            {historyDetailOrder.items.length > 0 ? (
+              <ul className="history-detail-items">
+                {historyDetailOrder.items.map((item) => (
+                  <li key={`${historyDetailOrder.id}-${item.id}-${item.name}`}>
+                    <span>{item.quantity} x {item.name}</span>
+                    <strong>{formatPrice(item.price * item.quantity)}</strong>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="history-detail-empty">
+                Les articles detailles ne sont pas disponibles dans cette session.
+              </p>
+            )}
+            {historyDetailOrder.rewardNote && (
+              <p className="history-detail-reward">{historyDetailOrder.rewardNote}</p>
+            )}
+            {historyDetailOrder.total !== null && (
+              <div className="history-detail-total">
+                <span>Total</span>
+                <strong>{formatPrice(historyDetailOrder.total)}</strong>
+              </div>
+            )}
+          </section>
+        </div>
+      )}
     </main>
+  );
+}
+
+function ClientHistoryPanel({ profile, onOpenDetails }) {
+  const transactions = profile.transactions || [];
+
+  if (transactions.length === 0) {
+    return (
+      <div className="client-empty-state client-history-empty">
+        <ClientIcon name="receipt" className="client-empty-icon" />
+        <strong>Aucun historique pour le moment</strong>
+        <p>Les points et recompenses utilises apparaitront ici apres paiement.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="client-history-list">
+      <div className="client-history-summary">
+        <span>Solde actuel</span>
+        <strong>{profile.totalPoints} pts</strong>
+      </div>
+      {transactions.map((transaction) => {
+        const isEarned = transaction.type === 'EARNED';
+        const createdAt = transaction.createdAt
+          ? new Date(transaction.createdAt).toLocaleString('fr-FR', {
+              day: '2-digit',
+              month: '2-digit',
+              hour: '2-digit',
+              minute: '2-digit',
+            })
+          : 'Date non disponible';
+
+        return (
+          <article className="client-history-card" key={transaction.id || `${transaction.type}-${createdAt}`}>
+            <ClientIcon name={isEarned ? 'gift' : 'receipt'} />
+            <div>
+              <strong>{isEarned ? 'Points gagnes' : 'Recompense utilisee'}</strong>
+              <span>
+                {transaction.orderNumber
+                  ? `Commande ${transaction.orderNumber}`
+                  : transaction.rewardName || 'Mouvement fidelite'}
+              </span>
+              <small>{createdAt}</small>
+            </div>
+            <em className={isEarned ? 'history-points-earned' : 'history-points-redeemed'}>
+              {isEarned ? '+' : '-'}{Math.abs(Number(transaction.points || 0))} pts
+            </em>
+            {transaction.orderNumber && (
+              <button
+                className="client-history-detail-button"
+                type="button"
+                onClick={() => onOpenDetails(transaction)}
+              >
+                Consulter details commande
+              </button>
+            )}
+          </article>
+        );
+      })}
+    </div>
   );
 }
 

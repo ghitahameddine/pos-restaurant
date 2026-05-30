@@ -11,6 +11,12 @@ public record AdminDashboardResponse(
         long paidStillSeatedTables,
         long billRequests,
         long kitchenDelayedOrders,
+        long totalUsers,
+        long clientUsers,
+        long staffUsers,
+        long ordersWithAccount,
+        long ordersWithoutAccount,
+        long unavailableMenuItems,
         BigDecimal salesToday,
         RestaurantStateResponse restaurantState
 ) {

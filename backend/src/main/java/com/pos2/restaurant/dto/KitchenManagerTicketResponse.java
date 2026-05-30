@@ -12,6 +12,7 @@ public record KitchenManagerTicketResponse(
         KitchenStationProgressResponse plats,
         KitchenStationProgressResponse boissons,
         KitchenStationProgressResponse desserts,
-        boolean completeReady
+        boolean completeReady,
+        boolean allCancelled
 ) {
 }

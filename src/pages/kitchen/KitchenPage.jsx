@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  cancelApiKitchenOrder,
   completeApiKitchenOrder,
+  fetchAdminMenuApi,
   fetchApiKitchenManager,
   fetchApiKitchenStation,
   readyApiKitchenStationOrder,
+  setMenuItemAvailabilityApi,
   startApiKitchenStationOrder,
   subscribeRealtime,
 } from '../../utils/api';
@@ -20,6 +23,15 @@ const STATION_COLUMNS = [
   { status: 'IN_PROGRESS', label: 'En cours', hint: 'Preparation active' },
   { status: 'DONE', label: 'Pretes', hint: 'Depose au slot' },
 ];
+
+const UNAVAILABLE_REASONS = [
+  'Rupture de stock',
+  'Ingredient termine',
+  'Preparation indisponible',
+  'Indisponible temporairement',
+];
+
+const KITCHEN_ORDER_CANCEL_REASONS = ['Commande impossible a preparer', 'Erreur de commande', 'Autre'];
 
 function normalizeScreenKey(value) {
   const requested = String(value || 'plats').trim().toLowerCase();
@@ -58,6 +70,7 @@ function getStationStatusLabel(status) {
 
 function getManagerStatusLabel(progress) {
   if (!progress?.required) return 'Non concerne';
+  if (progress.status === 'CANCELLED') return 'Incident';
   if (progress.status === 'DONE') return 'Pret';
   if (progress.status === 'IN_PROGRESS') return 'En cours';
   return 'En attente';
@@ -83,8 +96,8 @@ function getSlotAccent(slotColor) {
   if (normalized.includes('rouge')) return '#bb4639';
   if (normalized.includes('vert')) return '#207f5c';
   if (normalized.includes('bleu')) return '#23545b';
-  if (normalized.includes('jaune') || normalized.includes('gold') || normalized.includes('dor')) return '#b89039';
-  return '#b89039';
+  if (normalized.includes('jaune') || normalized.includes('gold') || normalized.includes('dor')) return '#c76b42';
+  return '#5f6f6a';
 }
 
 function countStationStatus(tickets, status) {
@@ -122,6 +135,11 @@ function KitchenPage() {
   const [error, setError] = useState('');
   const [busyKey, setBusyKey] = useState('');
   const [nowTick, setNowTick] = useState(() => Date.now());
+  const [menuItems, setMenuItems] = useState([]);
+  const [menuReasonDrafts, setMenuReasonDrafts] = useState({});
+  const [incidentDialog, setIncidentDialog] = useState(null);
+  const [customIncidentReason, setCustomIncidentReason] = useState('');
+  const [serverNotice, setServerNotice] = useState('');
   const requestIdRef = useRef(0);
   const hasLoadedRef = useRef(false);
 
@@ -241,7 +259,20 @@ function KitchenPage() {
     loadKitchenData();
 
     const stopRealtime = subscribeRealtime({
-      onOrder: scheduleKitchenRefresh,
+      onOrder: (order) => {
+        const status = String(order?.status || '').toLowerCase();
+        const comment = String(order?.comment || '').toLowerCase();
+
+        if (status.includes('annule')) {
+          setServerNotice(`Serveur: commande table ${order.table} annulee. Stop preparation.`);
+          window.setTimeout(() => setServerNotice(''), 7000);
+        } else if (comment.includes('remplacement suite incident')) {
+          setServerNotice(`Serveur: remplacement ajoute pour la table ${order.table}. Nouvelle preparation a suivre.`);
+          window.setTimeout(() => setServerNotice(''), 7000);
+        }
+
+        scheduleKitchenRefresh();
+      },
       onError: () => {},
     });
 
@@ -252,6 +283,33 @@ function KitchenPage() {
       if (realtimeRefreshId) window.clearTimeout(realtimeRefreshId);
       stopRealtime();
       window.clearInterval(intervalId);
+    };
+  }, [activeScreen]);
+
+  useEffect(() => {
+    if (activeScreen !== 'manager') return undefined;
+
+    let cancelled = false;
+
+    const loadMenu = async () => {
+      try {
+        const nextMenu = await fetchAdminMenuApi();
+        if (!cancelled) {
+          setMenuItems(Array.isArray(nextMenu) ? nextMenu : []);
+        }
+      } catch (menuError) {
+        console.warn('Menu cuisine indisponible.', menuError);
+      }
+    };
+
+    loadMenu();
+    const stopMenuRealtime = subscribeRealtime({
+      onMenu: loadMenu,
+    });
+
+    return () => {
+      cancelled = true;
+      stopMenuRealtime();
     };
   }, [activeScreen]);
 
@@ -294,6 +352,74 @@ function KitchenPage() {
     }
   };
 
+  const handleManagerCancelOrder = async (ticket, reason) => {
+    if (!reason || !reason.trim()) return;
+
+    const actionKey = `manager-cancel-${ticket.orderId}`;
+    setBusyKey(actionKey);
+    setError('');
+
+    try {
+      await cancelApiKitchenOrder(ticket.orderId, reason);
+      setTickets(stampTickets(await fetchApiKitchenManager()));
+    } catch (actionError) {
+      setError(actionError.message || "Impossible d'annuler cette commande.");
+    } finally {
+      setBusyKey('');
+    }
+  };
+
+  const openOrderCancelDialog = (ticket) => {
+    setCustomIncidentReason('');
+    setIncidentDialog({
+      type: 'manager-order',
+      title: 'Annuler la commande',
+      subtitle: `Table ${ticket.tableNumber} - ${ticket.orderNumber}`,
+      reasons: KITCHEN_ORDER_CANCEL_REASONS,
+      ticket,
+    });
+  };
+
+  const closeIncidentDialog = () => {
+    if (busyKey) return;
+    setIncidentDialog(null);
+    setCustomIncidentReason('');
+  };
+
+  const submitIncidentDialog = async (reason) => {
+    const finalReason = reason === 'Autre' ? customIncidentReason.trim() : reason;
+    if (!incidentDialog || !finalReason) return;
+
+    if (incidentDialog.type === 'manager-order') {
+      await handleManagerCancelOrder(incidentDialog.ticket, finalReason);
+    }
+
+    setIncidentDialog(null);
+    setCustomIncidentReason('');
+  };
+
+  const updateMenuAvailability = async (item, available) => {
+    const actionKey = `menu-${item.id}`;
+    const reason = menuReasonDrafts[item.id] || item.unavailableReason || UNAVAILABLE_REASONS[0];
+    setBusyKey(actionKey);
+    setError('');
+
+    try {
+      const updatedItem = await setMenuItemAvailabilityApi(item.id, available, reason);
+      setMenuItems((currentItems) =>
+        currentItems.map((currentItem) => (currentItem.id === updatedItem.id ? updatedItem : currentItem)),
+      );
+      setMenuReasonDrafts((currentDrafts) => ({
+        ...currentDrafts,
+        [item.id]: updatedItem.unavailableReason || '',
+      }));
+    } catch (actionError) {
+      setError(actionError.message || "Impossible de modifier la disponibilite du produit.");
+    } finally {
+      setBusyKey('');
+    }
+  };
+
   return (
     <main className="kitchen-page kds-page">
       <section className="kitchen-shell">
@@ -323,6 +449,7 @@ function KitchenPage() {
         </section>
 
         {error ? <div className="kitchen-feedback">{error}</div> : null}
+        {serverNotice ? <div className="kds-server-notice">{serverNotice}</div> : null}
 
         {loading ? (
           <section className="kitchen-empty-state">
@@ -364,6 +491,7 @@ function KitchenPage() {
                         <KitchenManagerCard
                           busyKey={busyKey}
                           key={ticket.orderId}
+                          onCancelOrder={openOrderCancelDialog}
                           onComplete={handleManagerComplete}
                           ticket={ticket}
                         />
@@ -385,6 +513,29 @@ function KitchenPage() {
                   ))}
             </section>
           </section>
+        ) : null}
+
+        {activeScreen === 'manager' ? (
+          <KitchenAvailabilityPanel
+            busyKey={busyKey}
+            items={menuItems}
+            onReasonChange={(itemId, reason) =>
+              setMenuReasonDrafts((currentDrafts) => ({ ...currentDrafts, [itemId]: reason }))
+            }
+            onToggleAvailability={updateMenuAvailability}
+            reasonDrafts={menuReasonDrafts}
+          />
+        ) : null}
+
+        {incidentDialog ? (
+          <KitchenIncidentDialog
+            busy={Boolean(busyKey)}
+            customReason={customIncidentReason}
+            dialog={incidentDialog}
+            onClose={closeIncidentDialog}
+            onCustomReasonChange={setCustomIncidentReason}
+            onSubmit={submitIncidentDialog}
+          />
         ) : null}
       </section>
     </main>
@@ -454,6 +605,15 @@ function KitchenProgressStrip({ ticket }) {
   );
 }
 
+function isCancelledKitchenItem(item) {
+  return item?.status === 'CANCELLED';
+}
+
+function hasKitchenIncident(ticket) {
+  return getProgressItems(ticket).some((progress) => progress.status === 'CANCELLED')
+    || (ticket.items || []).some(isCancelledKitchenItem);
+}
+
 function KitchenStationCard({ activeScreen, busyKey, onAction, ticket }) {
   const actionKey = `${activeScreen}-${ticket.orderId}`;
   const isDone = ticket.status === 'DONE';
@@ -483,16 +643,28 @@ function KitchenStationCard({ activeScreen, busyKey, onAction, ticket }) {
 
         <div className="kds-items-list">
           {ticket.items.map((item) => (
-            <div className="kds-item-row" key={item.id}>
+            <div className={`kds-item-row ${isCancelledKitchenItem(item) ? 'is-cancelled' : ''}`} key={item.id}>
               <span>{item.quantity}x</span>
-              <strong>{item.itemName}</strong>
+              <div className="kds-item-copy">
+                <strong>{item.itemName}</strong>
+                {isCancelledKitchenItem(item) && (
+                  <small>Ligne retiree: {item.cancellationReason || 'Motif non precise'}</small>
+                )}
+              </div>
               {item.rewardItem && <b>Offert</b>}
+              {isCancelledKitchenItem(item) ? <b className="kds-cancelled-badge">Retire</b> : null}
             </div>
           ))}
         </div>
 
         {ticket.customerComment ? (
-          <div className="kds-comment">
+          <div
+            className={`kds-comment ${
+              ticket.customerComment.toLowerCase().includes('remplacement suite incident')
+                ? 'kds-server-decision'
+                : ''
+            }`}
+          >
             <span>Commentaire</span>
             <strong>{ticket.customerComment}</strong>
           </div>
@@ -511,9 +683,12 @@ function KitchenStationCard({ activeScreen, busyKey, onAction, ticket }) {
   );
 }
 
-function KitchenManagerCard({ busyKey, onComplete, ticket }) {
+function KitchenManagerCard({ busyKey, onCancelOrder, onComplete, ticket }) {
   const actionKey = `manager-${ticket.orderId}`;
+  const cancelKey = `manager-cancel-${ticket.orderId}`;
   const complete = ticket.completeReady;
+  const allCancelled = Boolean(ticket.allCancelled);
+  const hasIncident = hasKitchenIncident(ticket);
 
   return (
     <article className={`kds-ticket-card kds-manager-card ${complete ? 'kds-status-done' : 'kds-status-waiting'}`}>
@@ -531,11 +706,18 @@ function KitchenManagerCard({ busyKey, onComplete, ticket }) {
         <div className="kds-order-line">
           <span>{ticket.orderNumber}</span>
           <b className={`kds-state-badge ${complete ? 'status-done' : 'status-waiting'}`}>
-            {complete ? 'Plateau complet' : 'En montage'}
+            {allCancelled ? 'Tout annule' : complete ? 'Plateau complet' : 'En montage'}
           </b>
         </div>
 
         <KitchenProgressStrip ticket={ticket} />
+
+        {hasIncident ? (
+          <div className="kds-incident-note">
+            <strong>Incident cuisine signale</strong>
+            <span>Serveur notifie. Desactiver le produit du menu si le probleme est general.</span>
+          </div>
+        ) : null}
 
         {ticket.customerComment ? (
           <div className="kds-comment">
@@ -546,7 +728,7 @@ function KitchenManagerCard({ busyKey, onComplete, ticket }) {
 
         <button
           className="kds-primary-action action-ready"
-          disabled={!complete || busyKey === actionKey}
+          disabled={!complete || allCancelled || busyKey === actionKey}
           onClick={() => onComplete(ticket)}
           type="button"
         >
@@ -556,8 +738,154 @@ function KitchenManagerCard({ busyKey, onComplete, ticket }) {
               ? 'Valider plateau complet'
               : 'En attente des postes'}
         </button>
+
+        <button
+          className="kds-secondary-danger-action"
+          disabled={busyKey === cancelKey}
+          onClick={() => onCancelOrder(ticket)}
+          type="button"
+        >
+          {busyKey === cancelKey
+            ? 'Annulation...'
+            : allCancelled
+              ? "Confirmer l'annulation complete"
+              : 'Annuler cette commande'}
+        </button>
       </div>
     </article>
+  );
+}
+
+function KitchenIncidentDialog({
+  busy,
+  customReason,
+  dialog,
+  onClose,
+  onCustomReasonChange,
+  onSubmit,
+}) {
+  const canSubmitOther = customReason.trim().length > 0;
+
+  return (
+    <div className="kds-modal-backdrop" role="presentation">
+      <section aria-modal="true" className="kds-incident-modal" role="dialog">
+        <header>
+          <span>Decision cuisine</span>
+          <h2>{dialog.title}</h2>
+          <p>{dialog.subtitle}</p>
+        </header>
+
+        <div className="kds-modal-reasons">
+          {dialog.reasons
+            .filter((reason) => reason !== 'Autre')
+            .map((reason) => (
+              <button disabled={busy} key={reason} onClick={() => onSubmit(reason)} type="button">
+                {reason}
+              </button>
+            ))}
+        </div>
+
+        <label className="kds-modal-other">
+          Autre motif
+          <input
+            disabled={busy}
+            onChange={(event) => onCustomReasonChange(event.target.value)}
+            placeholder="Ex: machine en panne, produit tombe..."
+            type="text"
+            value={customReason}
+          />
+        </label>
+
+        <footer>
+          <button className="kds-modal-secondary" disabled={busy} onClick={onClose} type="button">
+            Fermer
+          </button>
+          <button
+            className="kds-modal-primary"
+            disabled={busy || !canSubmitOther}
+            onClick={() => onSubmit('Autre')}
+            type="button"
+          >
+            Valider autre motif
+          </button>
+        </footer>
+      </section>
+    </div>
+  );
+}
+
+function KitchenAvailabilityPanel({
+  busyKey,
+  items,
+  onReasonChange,
+  onToggleAvailability,
+  reasonDrafts,
+}) {
+  return (
+    <section className="kds-availability-panel">
+      <header>
+        <div>
+          <span>Disponibilite menu</span>
+          <h2>Produits du restaurant</h2>
+        </div>
+        <p>Le responsable peut retirer un produit du menu client avec une raison claire.</p>
+      </header>
+
+      <div className="kds-availability-grid">
+        {items.length === 0 ? (
+          <p className="kds-empty-column">Aucun produit charge.</p>
+        ) : (
+          items.map((item) => {
+            const reason = reasonDrafts[item.id] ?? item.unavailableReason ?? UNAVAILABLE_REASONS[0];
+            const actionKey = `menu-${item.id}`;
+
+            return (
+              <article className={`kds-menu-state-card ${item.available ? '' : 'is-unavailable'}`} key={item.id}>
+                <div>
+                  <span>{item.category}</span>
+                  <strong>{item.name}</strong>
+                  <small>{item.available ? 'Disponible' : item.unavailableReason || reason}</small>
+                </div>
+
+                <label>
+                  Raison
+                  <select value={reason} onChange={(event) => onReasonChange(item.id, event.target.value)}>
+                    {UNAVAILABLE_REASONS.map((option) => (
+                      <option key={option} value={option}>
+                        {option}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label>
+                  Autre raison
+                  <input
+                    onChange={(event) => onReasonChange(item.id, event.target.value)}
+                    placeholder="Ex: four en panne, sauce terminee..."
+                    type="text"
+                    value={reason}
+                  />
+                </label>
+
+                <button
+                  className={`kds-primary-action ${item.available ? '' : 'action-ready'}`}
+                  disabled={busyKey === actionKey}
+                  onClick={() => onToggleAvailability(item, !item.available)}
+                  type="button"
+                >
+                  {busyKey === actionKey
+                    ? 'Mise a jour...'
+                    : item.available
+                      ? 'Desactiver ce plat'
+                      : 'Remettre disponible'}
+                </button>
+              </article>
+            );
+          })
+        )}
+      </div>
+    </section>
   );
 }
 

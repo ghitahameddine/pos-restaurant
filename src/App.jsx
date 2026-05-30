@@ -1,9 +1,11 @@
+import { Suspense, lazy } from 'react';
 import './App.css';
-import AdminPage from './pages/admin/AdminPage';
-import MenuPage from './pages/client/MenuPage';
-import KitchenPage from './pages/kitchen/KitchenPage';
-import QrCodesPage from './pages/QrCodesPage';
-import ServerPage from './pages/server/ServerPage';
+
+const AdminPage = lazy(() => import('./pages/admin/AdminPage'));
+const MenuPage = lazy(() => import('./pages/client/MenuPage'));
+const KitchenPage = lazy(() => import('./pages/kitchen/KitchenPage'));
+const QrCodesPage = lazy(() => import('./pages/QrCodesPage'));
+const ServerPage = lazy(() => import('./pages/server/ServerPage'));
 
 function HomePage() {
   return (
@@ -52,34 +54,39 @@ function NotFoundPage() {
   );
 }
 
+function PageLoader() {
+  return (
+    <main className="home-page">
+      <section className="home-card">
+        <p className="eyebrow">POS2</p>
+        <h1>Chargement...</h1>
+        <p>Preparation de l'interface demandee.</p>
+      </section>
+    </main>
+  );
+}
+
 function App() {
   const path = window.location.pathname;
+  let page = null;
 
   if (path === '/') {
-    return <HomePage />;
+    page = <HomePage />;
+  } else if (path === '/menu') {
+    page = <MenuPage />;
+  } else if (path === '/qr-codes') {
+    page = <QrCodesPage />;
+  } else if (path === '/server') {
+    page = <ServerPage />;
+  } else if (path === '/kitchen') {
+    page = <KitchenPage />;
+  } else if (path === '/admin') {
+    page = <AdminPage />;
+  } else {
+    page = <NotFoundPage />;
   }
 
-  if (path === '/menu') {
-    return <MenuPage />;
-  }
-
-  if (path === '/qr-codes') {
-    return <QrCodesPage />;
-  }
-
-  if (path === '/server') {
-    return <ServerPage />;
-  }
-
-  if (path === '/kitchen') {
-    return <KitchenPage />;
-  }
-
-  if (path === '/admin') {
-    return <AdminPage />;
-  }
-
-  return <NotFoundPage />;
+  return <Suspense fallback={<PageLoader />}>{page}</Suspense>;
 }
 
 export default App;

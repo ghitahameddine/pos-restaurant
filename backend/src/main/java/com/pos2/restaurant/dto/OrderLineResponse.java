@@ -11,7 +11,9 @@ public record OrderLineResponse(
         BigDecimal unitPrice,
         int quantity,
         int points,
-        BigDecimal lineTotal
+        BigDecimal lineTotal,
+        boolean cancelled,
+        String cancellationReason
 ) {
     public static OrderLineResponse fromEntity(OrderLine line) {
         return new OrderLineResponse(
@@ -21,8 +23,9 @@ public record OrderLineResponse(
                 line.getUnitPrice(),
                 line.getQuantity(),
                 line.getPoints(),
-                line.getLineTotal()
+                line.getLineTotal(),
+                line.isCancelled(),
+                line.getCancellationReason()
         );
     }
 }
-

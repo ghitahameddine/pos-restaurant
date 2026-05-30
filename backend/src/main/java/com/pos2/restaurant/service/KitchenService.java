@@ -19,6 +19,7 @@ import com.pos2.restaurant.exception.BadRequestException;
 import com.pos2.restaurant.exception.ResourceNotFoundException;
 import com.pos2.restaurant.repository.CustomerOrderRepository;
 import com.pos2.restaurant.repository.KitchenItemRepository;
+import com.pos2.restaurant.repository.OrderLineRepository;
 import com.pos2.restaurant.repository.SlotRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -40,17 +41,20 @@ public class KitchenService {
 
     private final KitchenItemRepository kitchenItemRepository;
     private final CustomerOrderRepository orderRepository;
+    private final OrderLineRepository orderLineRepository;
     private final SlotRepository slotRepository;
     private final RealtimeService realtimeService;
 
     public KitchenService(
             KitchenItemRepository kitchenItemRepository,
             CustomerOrderRepository orderRepository,
+            OrderLineRepository orderLineRepository,
             SlotRepository slotRepository,
             RealtimeService realtimeService
     ) {
         this.kitchenItemRepository = kitchenItemRepository;
         this.orderRepository = orderRepository;
+        this.orderLineRepository = orderLineRepository;
         this.slotRepository = slotRepository;
         this.realtimeService = realtimeService;
     }
@@ -102,6 +106,7 @@ public class KitchenService {
 
         items.stream()
                 .filter(item -> item.getStatus() != KitchenItemStatus.DONE)
+                .filter(item -> item.getStatus() != KitchenItemStatus.CANCELLED)
                 .forEach(item -> item.setStatus(KitchenItemStatus.IN_PROGRESS));
 
         if (order.getStatus() == OrderStatus.CONFIRMED) {
@@ -122,10 +127,36 @@ public class KitchenService {
             throw new BadRequestException("Aucun article pour ce poste.");
         }
 
-        items.forEach(item -> item.setStatus(KitchenItemStatus.DONE));
+        items.stream()
+                .filter(item -> item.getStatus() != KitchenItemStatus.CANCELLED)
+                .forEach(item -> item.setStatus(KitchenItemStatus.DONE));
         kitchenItemRepository.saveAll(items);
         publishOrder(order);
         return toStationTicket(items);
+    }
+
+    @Transactional
+    public KitchenStationTicketResponse cancelStationItem(String stationKey, Long orderId, Long itemId, String reason) {
+        CustomerOrder order = findKitchenOrder(orderId);
+        String station = normalizeStation(stationKey);
+        KitchenItem item = kitchenItemRepository.findById(itemId)
+                .orElseThrow(() -> new ResourceNotFoundException("Article cuisine introuvable: " + itemId));
+
+        if (!item.getOrder().getId().equals(orderId) || !station.equals(item.getStation())) {
+            throw new BadRequestException("Cet article ne correspond pas a ce poste cuisine.");
+        }
+
+        item.cancel(normalizeCancelReason(reason));
+        if (item.getOrderLine() != null) {
+            item.getOrderLine().cancel(item.getCancellationReason());
+            orderLineRepository.save(item.getOrderLine());
+        }
+
+        order.recalculateTotals();
+        kitchenItemRepository.save(item);
+        orderRepository.save(order);
+        publishOrder(order);
+        return toStationTicket(kitchenItemRepository.findByOrder_IdAndStationOrderByCreatedAtAsc(orderId, station));
     }
 
     @Transactional
@@ -136,7 +167,15 @@ public class KitchenService {
             throw new BadRequestException("Aucun article cuisine pour cette commande.");
         }
 
-        boolean allDone = items.stream().allMatch(item -> item.getStatus() == KitchenItemStatus.DONE);
+        List<KitchenItem> activeItems = items.stream()
+                .filter(item -> item.getStatus() != KitchenItemStatus.CANCELLED)
+                .toList();
+        if (activeItems.isEmpty()) {
+            throw new BadRequestException("Tous les articles sont annules. Le responsable doit confirmer l'annulation.");
+        }
+
+        boolean allDone = activeItems.stream()
+                .allMatch(item -> item.getStatus() == KitchenItemStatus.DONE);
         if (!allDone) {
             throw new BadRequestException("Toutes les parties ne sont pas encore pretes.");
         }
@@ -158,6 +197,49 @@ public class KitchenService {
         orderRepository.save(order);
         publishOrder(order);
         return OrderResponse.fromEntity(order);
+    }
+
+    @Transactional
+    public OrderResponse cancelKitchenOrder(Long orderId, String reason) {
+        CustomerOrder order = findKitchenOrder(orderId);
+        List<KitchenItem> items = kitchenItemRepository.findByOrder_IdOrderByCreatedAtAsc(orderId);
+        String cancelReason = normalizeCancelReason(reason);
+
+        items.forEach(item -> {
+            item.cancel(cancelReason);
+            if (item.getOrderLine() != null) {
+                item.getOrderLine().cancel(cancelReason);
+                orderLineRepository.save(item.getOrderLine());
+            }
+        });
+
+        order.recalculateTotals();
+        order.setStatus(OrderStatus.CANCELLED);
+        kitchenItemRepository.saveAll(items);
+        orderRepository.save(order);
+        releaseAllKitchenResources(orderId, true);
+        publishOrder(order);
+        return OrderResponse.fromEntity(order);
+    }
+
+    @Transactional
+    public void cancelKitchenItemsForServerDecision(CustomerOrder order, String reason) {
+        List<KitchenItem> items = kitchenItemRepository.findByOrder_IdOrderByCreatedAtAsc(order.getId());
+        if (items.isEmpty()) {
+            return;
+        }
+
+        String cancelReason = normalizeCancelReason(reason);
+        items.forEach(item -> {
+            item.cancel(cancelReason);
+            if (item.getOrderLine() != null) {
+                item.getOrderLine().cancel(cancelReason);
+                orderLineRepository.save(item.getOrderLine());
+            }
+        });
+
+        order.recalculateTotals();
+        kitchenItemRepository.saveAll(items);
     }
 
     @Transactional
@@ -301,7 +383,14 @@ public class KitchenService {
                 elapsedMinutes(order.getCreatedAt()),
                 status,
                 items.stream()
-                        .map(item -> new KitchenItemEntryResponse(item.getId(), item.getItemName(), item.getQuantity(), item.isRewardItem()))
+                        .map(item -> new KitchenItemEntryResponse(
+                                item.getId(),
+                                item.getItemName(),
+                                item.getQuantity(),
+                                item.isRewardItem(),
+                                item.getStatus(),
+                                item.getCancellationReason()
+                        ))
                         .toList()
         );
     }
@@ -317,7 +406,8 @@ public class KitchenService {
         KitchenStationProgressResponse boissons = buildProgress(items, STATION_BOISSONS);
         KitchenStationProgressResponse desserts = buildProgress(items, STATION_DESSERTS);
 
-        boolean completeReady = isStationReady(plats) && isStationReady(boissons) && isStationReady(desserts);
+        boolean allCancelled = !items.isEmpty() && items.stream().allMatch(item -> item.getStatus() == KitchenItemStatus.CANCELLED);
+        boolean completeReady = !allCancelled && isStationReady(plats) && isStationReady(boissons) && isStationReady(desserts);
 
         return new KitchenManagerTicketResponse(
                 order.getId(),
@@ -331,7 +421,8 @@ public class KitchenService {
                 plats,
                 boissons,
                 desserts,
-                completeReady
+                completeReady,
+                allCancelled
         );
     }
 
@@ -353,12 +444,21 @@ public class KitchenService {
     }
 
     private boolean isStationReady(KitchenStationProgressResponse progress) {
-        return !progress.required() || progress.status() == KitchenItemStatus.DONE;
+        return !progress.required()
+                || progress.status() == KitchenItemStatus.DONE
+                || progress.status() == KitchenItemStatus.CANCELLED;
     }
 
     private KitchenItemStatus resolveStationStatus(List<KitchenItem> items) {
-        boolean hasInProgress = items.stream().anyMatch(item -> item.getStatus() == KitchenItemStatus.IN_PROGRESS);
-        boolean allDone = items.stream().allMatch(item -> item.getStatus() == KitchenItemStatus.DONE);
+        List<KitchenItem> activeItems = items.stream()
+                .filter(item -> item.getStatus() != KitchenItemStatus.CANCELLED)
+                .toList();
+        if (activeItems.isEmpty()) {
+            return KitchenItemStatus.CANCELLED;
+        }
+
+        boolean hasInProgress = activeItems.stream().anyMatch(item -> item.getStatus() == KitchenItemStatus.IN_PROGRESS);
+        boolean allDone = activeItems.stream().allMatch(item -> item.getStatus() == KitchenItemStatus.DONE);
         if (allDone) {
             return KitchenItemStatus.DONE;
         }
@@ -379,6 +479,13 @@ public class KitchenService {
 
     private long elapsedMinutes(Instant createdAt) {
         return Math.max(0, Duration.between(createdAt, Instant.now()).toMinutes());
+    }
+
+    private String normalizeCancelReason(String reason) {
+        if (reason == null || reason.isBlank()) {
+            return "Autre";
+        }
+        return reason.trim();
     }
 
     private void publishOrder(CustomerOrder order) {

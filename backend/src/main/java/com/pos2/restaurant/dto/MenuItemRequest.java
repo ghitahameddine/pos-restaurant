@@ -11,6 +11,8 @@ public record MenuItemRequest(
         String description,
         String details,
         String imageUrl,
-        Boolean available
+        Boolean available,
+        Integer stockQuantity,
+        String unavailableReason
 ) {
 }

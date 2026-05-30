@@ -18,6 +18,7 @@ import {
   createApiBillRequest,
   createApiOrder,
   fetchApiBillRequests,
+  fetchMenuCatalogApi,
   fetchApiOrders,
   fetchApiSlots,
   fetchApiTables,
@@ -34,6 +35,27 @@ import {
 
 const SERVER_AUTH_KEY = 'pos2-server-authenticated';
 const SERVER_AUTH_STORAGE_KEY = 'pos2-server-auth';
+
+function mapCatalogProduct(item) {
+  const fallback = menuProducts.find((product) => Number(product.id) === Number(item.id)) || {};
+  return {
+    ...fallback,
+    id: item.id,
+    name: item.name,
+    category: item.category,
+    price: Number(item.price || 0),
+    points: Number(item.points || 0),
+    station: item.station,
+    description: item.description,
+    details: item.details || fallback.details || '',
+    image: item.imageUrl || fallback.image || '',
+    prepTime: fallback.prepTime || '10 min',
+    badge: item.available === false ? 'Indisponible' : fallback.badge || 'Maison',
+    available: item.available !== false,
+    stockQuantity: item.stockQuantity ?? null,
+    unavailableReason: item.unavailableReason || '',
+  };
+}
 
 function getStoredServerAuth() {
   const rawAuth = sessionStorage.getItem(SERVER_AUTH_STORAGE_KEY);
@@ -103,6 +125,25 @@ function getOrderDiscountAmount(order) {
 
 function isRewardFreeItem(item) {
   return Boolean(item?.isRewardItem) || (Number(item?.price || 0) === 0 && Number(item?.quantity || 0) > 0);
+}
+
+function isKitchenIncidentItem(item) {
+  return Boolean(item?.cancelled || item?.cancellationReason);
+}
+
+function getKitchenIncidentItems(order) {
+  return (order?.items || []).filter(isKitchenIncidentItem);
+}
+
+function hasKitchenIncident(order) {
+  return getKitchenIncidentItems(order).length > 0;
+}
+
+function getKitchenIncidentLabel(order) {
+  const count = getKitchenIncidentItems(order).length;
+  if (count === 0) return '';
+  if (count === 1) return '1 article signale par la cuisine';
+  return `${count} articles signales par la cuisine`;
 }
 
 function isReadyForPickup(order) {
@@ -210,8 +251,8 @@ function normalizeSlotAccent(color) {
   if (normalized.includes('rouge')) return '#bb4639';
   if (normalized.includes('vert')) return '#207f5c';
   if (normalized.includes('bleu')) return '#23545b';
-  if (normalized.includes('jaune') || normalized.includes('gold') || normalized.includes('dor')) return '#b89039';
-  return '#b89039';
+  if (normalized.includes('jaune') || normalized.includes('gold') || normalized.includes('dor')) return '#c76b42';
+  return '#5f6f6a';
 }
 
 function getReadySinceLabel(dateValue, nowTick) {
@@ -287,11 +328,22 @@ function ServerPage() {
   const [historySearch, setHistorySearch] = useState('');
   const [paymentMethods, setPaymentMethods] = useState({});
   const [activeServerCategory, setActiveServerCategory] = useState('Tous');
+  const [menuCatalog, setMenuCatalog] = useState(() =>
+    menuProducts.map((product) => ({
+      ...product,
+      available: product.available !== false,
+      unavailableReason: product.unavailableReason || '',
+    })),
+  );
   const [counterSlots, setCounterSlots] = useState([]);
   const [apiTables, setApiTables] = useState([]);
   const [nowTick, setNowTick] = useState(() => Date.now());
 
   useEffect(() => {
+    if (!isAuthenticated) {
+      return undefined;
+    }
+
     let cancelled = false;
     let refreshInProgress = false;
     let realtimeRefreshId = null;
@@ -400,7 +452,57 @@ function ServerPage() {
       window.clearInterval(tickId);
       unsubscribeRealtime();
     };
-  }, []);
+  }, [isAuthenticated]);
+
+  useEffect(() => {
+    if (!isAuthenticated) {
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    const loadMenuCatalog = async () => {
+      try {
+        const nextCatalog = await fetchMenuCatalogApi();
+        if (!cancelled && Array.isArray(nextCatalog)) {
+          const mappedCatalog = nextCatalog.map(mapCatalogProduct);
+          let removedUnavailableItem = false;
+          setMenuCatalog(mappedCatalog);
+          setServerOrder((currentOrder) => ({
+            ...currentOrder,
+            items: currentOrder.items
+              .map((orderItem) => {
+                const latestProduct = mappedCatalog.find((product) => Number(product.id) === Number(orderItem.id));
+                if (!latestProduct) return orderItem;
+                if (latestProduct.available === false) {
+                  removedUnavailableItem = true;
+                  return null;
+                }
+                return { ...orderItem, ...latestProduct, quantity: orderItem.quantity };
+              })
+              .filter(Boolean),
+          }));
+          if (removedUnavailableItem) {
+            setServerActionError('Un produit devenu indisponible a ete retire de la nouvelle commande.');
+          }
+        }
+      } catch (error) {
+        console.warn('Menu backend indisponible pour le serveur.', error);
+      }
+    };
+
+    loadMenuCatalog();
+    const stopMenuRealtime = subscribeRealtime({
+      onMenu: loadMenuCatalog,
+    });
+    const menuRefreshId = window.setInterval(loadMenuCatalog, 30000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(menuRefreshId);
+      stopMenuRealtime();
+    };
+  }, [isAuthenticated]);
 
   const assignedTableNumbers = useMemo(
     () => parseAssignedTables(serverAuth?.assignedTables),
@@ -524,16 +626,16 @@ function ServerPage() {
     [confirmedOrders, pendingOrders],
   );
   const serverCategories = useMemo(
-    () => ['Tous', ...new Set(menuProducts.map((product) => product.category))],
-    [],
+    () => ['Tous', ...new Set(menuCatalog.map((product) => product.category))],
+    [menuCatalog],
   );
   const filteredServerProducts = useMemo(() => {
     if (activeServerCategory === 'Tous') {
-      return menuProducts;
+      return menuCatalog;
     }
 
-    return menuProducts.filter((product) => product.category === activeServerCategory);
-  }, [activeServerCategory]);
+    return menuCatalog.filter((product) => product.category === activeServerCategory);
+  }, [activeServerCategory, menuCatalog]);
 
   const tableOverview = useMemo(() => {
     const sourceTables =
@@ -728,33 +830,55 @@ function ServerPage() {
     return Array.from(uniqueOrders.values());
   }, [paymentOrders]);
 
+  const orderQueueSelectableOrders = useMemo(
+    () => [...pendingOrders, ...confirmedOrders],
+    [confirmedOrders, pendingOrders],
+  );
+
   const selectableOrders = useMemo(() => {
     if (activeServerView === 'history') return handledOrders;
     if (activeServerView === 'billing') return billingSelectableOrders;
     if (activeServerView === 'ready') return pickupOrders;
+    if (activeServerView === 'orders') return orderQueueSelectableOrders;
     return activeServiceOrders;
-  }, [activeServerView, activeServiceOrders, billingSelectableOrders, handledOrders, pickupOrders]);
+  }, [
+    activeServerView,
+    activeServiceOrders,
+    billingSelectableOrders,
+    handledOrders,
+    orderQueueSelectableOrders,
+    pickupOrders,
+  ]);
 
   const selectedOrder = selectedOrderId
     ? selectableOrders.find((order) => order.id === selectedOrderId) || null
     : null;
   const selectedBillRequest = findBillRequestForOrder(selectedOrder);
-  const showSelectedOrderPanel = activeServerView === 'orders' || activeServerView === 'ready';
+  const showSelectedOrderPanel =
+    activeServerView === 'orders' || activeServerView === 'ready';
 
   useEffect(() => {
-    if ((activeServerView !== 'orders' && activeServerView !== 'ready') || !selectedOrderId) {
+    if (
+      (activeServerView !== 'orders' && activeServerView !== 'ready') ||
+      !selectedOrderId
+    ) {
       return;
     }
 
-    const sourceOrders = activeServerView === 'ready' ? pickupOrders : activeServiceOrders;
+    const sourceOrders =
+      activeServerView === 'ready'
+        ? pickupOrders
+        : orderQueueSelectableOrders;
     const currentSelectedOrder = sourceOrders.find((order) => order.id === selectedOrderId);
-    if (!currentSelectedOrder || (activeServerView === 'orders' && getOrderStage(currentSelectedOrder) === 'kitchen')) {
+    if (!currentSelectedOrder) {
       setSelectedOrderId(null);
     }
-  }, [activeServiceOrders, activeServerView, pickupOrders, selectedOrderId]);
+  }, [activeServerView, orderQueueSelectableOrders, pickupOrders, selectedOrderId]);
 
   const openNewOrderForTable = (tableId) => {
-    setServerOrder((currentOrder) => ({ ...currentOrder, table: tableId }));
+    setSelectedOrderId(null);
+    setActiveServerCategory('Tous');
+    setServerOrder({ ...createEmptyServerOrder(), table: tableId });
     setActiveServerView('menu');
   };
 
@@ -764,16 +888,38 @@ function ServerPage() {
       return;
     }
 
-    if (table.status !== 'in_service' || !table.activeOrderId) {
+    const targetOrderId = table.activeOrderId;
+
+    if (!targetOrderId) {
+      setServerActionError(`Aucune commande active trouvee pour la table ${table.id}.`);
       return;
     }
 
-    setSelectedOrderId(table.activeOrderId);
+    setServerActionError('');
+    setSelectedOrderId(targetOrderId);
     setActiveServerView('orders');
   };
 
   const addItemForTable = (table) => {
-    setServerOrder((currentOrder) => ({ ...currentOrder, table: table.id }));
+    setServerActionError('');
+    setSelectedOrderId(null);
+    setActiveServerCategory('Tous');
+    setServerOrder({ ...createEmptyServerOrder(), table: table.id });
+    setActiveServerView('menu');
+  };
+
+  const openReplacementOrder = (order) => {
+    if (!order) return;
+
+    setServerActionError('');
+    setSelectedOrderId(null);
+    setActiveServerCategory('Tous');
+    setServerOrder({
+      ...createEmptyServerOrder(),
+      table: order.table,
+      clientName: order.clientName || 'Client accompagne',
+      comment: `Remplacement suite incident cuisine sur ${order.id}`,
+    });
     setActiveServerView('menu');
   };
 
@@ -914,6 +1060,11 @@ function ServerPage() {
   };
 
   const editPendingOrderItem = (order, product, quantityChange) => {
+    if (product.available === false && quantityChange > 0) {
+      setServerActionError(product.unavailableReason || 'Ce produit est indisponible.');
+      return;
+    }
+
     const editableItems = order.items.filter((item) => !item.isRewardItem);
     const rewardItems = order.items.filter((item) => item.isRewardItem);
     const existingItem = editableItems.find((item) => item.id === product.id);
@@ -952,6 +1103,11 @@ function ServerPage() {
   };
 
   const updateServerOrderItem = (product, quantityChange) => {
+    if (product.available === false && quantityChange > 0) {
+      setServerActionError(product.unavailableReason || 'Ce produit est indisponible.');
+      return;
+    }
+
     setServerOrder((currentOrder) => {
       const existingItem = currentOrder.items.find((item) => item.id === product.id);
 
@@ -1071,6 +1227,20 @@ function ServerPage() {
 
   const submitServerOrder = async () => {
     if (!serverOrder.table || serverOrder.items.length === 0) return;
+    const unavailableItem = serverOrder.items.find((item) => {
+      const latestProduct = menuCatalog.find((product) => Number(product.id) === Number(item.id));
+      return latestProduct?.available === false;
+    });
+
+    if (unavailableItem) {
+      const latestProduct = menuCatalog.find((product) => Number(product.id) === Number(unavailableItem.id));
+      setServerActionError(latestProduct?.unavailableReason || `${unavailableItem.name} est indisponible.`);
+      setServerOrder((currentOrder) => ({
+        ...currentOrder,
+        items: currentOrder.items.filter((item) => Number(item.id) !== Number(unavailableItem.id)),
+      }));
+      return;
+    }
 
     const createdAt = new Date().toISOString();
 
@@ -1126,7 +1296,11 @@ function ServerPage() {
       setServerAuth(auth);
       setIsAuthenticated(true);
     } catch (error) {
-      setServerAuthError(error.message || 'Connexion serveur impossible.');
+      setServerAuthError(
+        error.message?.includes('Backend indisponible') || error.message?.includes('API inaccessible')
+          ? "Connexion trop lente ou API inaccessible. Verifie /api/health puis relance Spring Boot si besoin."
+          : error.message || 'Connexion serveur impossible.',
+      );
     } finally {
       setServerAuthLoading(false);
     }
@@ -1959,7 +2133,10 @@ function ServerPage() {
                       const quantity = getServerItemQuantity(product.id);
 
                       return (
-                        <article className="server-food-card" key={product.id}>
+                        <article
+                          className={`server-food-card ${product.available === false ? 'server-food-card-unavailable' : ''}`}
+                          key={product.id}
+                        >
                           <div
                             className="server-food-image"
                             style={{ backgroundImage: `url(${product.image})` }}
@@ -1967,18 +2144,27 @@ function ServerPage() {
                           <div className="server-food-body">
                             <small>{product.category}</small>
                             <strong>{product.name}</strong>
+                            {product.available === false && (
+                              <small className="server-product-unavailable">
+                                {product.unavailableReason || 'Indisponible temporairement'}
+                              </small>
+                            )}
                             <span>{formatPrice(product.price)}</span>
                           </div>
                           <div className="quantity-actions">
                             <button
-                              disabled={quantity === 0}
+                              disabled={quantity === 0 || product.available === false}
                               type="button"
                               onClick={() => updateServerOrderItem(product, -1)}
                             >
                               -
                             </button>
                             <span>{quantity}</span>
-                            <button type="button" onClick={() => updateServerOrderItem(product, 1)}>
+                            <button
+                              disabled={product.available === false}
+                              type="button"
+                              onClick={() => updateServerOrderItem(product, 1)}
+                            >
                               +
                             </button>
                           </div>
@@ -2089,9 +2275,12 @@ function ServerPage() {
                 <SelectedOrderPanel
                   order={selectedOrder}
                   billRequest={selectedBillRequest}
+                  menuCatalog={menuCatalog}
                   primaryDisabled={isPrimaryActionDisabled(selectedOrder)}
                   onEditItem={editPendingOrderItem}
                   onPrimary={() => runPrimaryOrderAction(selectedOrder)}
+                  onAddReplacement={() => openReplacementOrder(selectedOrder)}
+                  onCancelOrder={() => selectedOrder && cancelOrder(selectedOrder.id)}
                   onReject={() => selectedOrder && cancelOrder(selectedOrder.id)}
                   onPaymentMethodChange={(orderId, method) =>
                     setPaymentMethods((current) => ({
@@ -2198,8 +2387,9 @@ function ServerOrderCard({
   const stage = getOrderStage(order);
   const visibleItems = order.items.slice(0, 3);
   const discountAmount = getOrderDiscountAmount(order);
-  const slotAccent = slotInfo ? normalizeSlotAccent(slotInfo.color) : '#b89039';
+  const slotAccent = slotInfo ? normalizeSlotAccent(slotInfo.color) : '#5f6f6a';
   const slotLabel = slotInfo?.colorName || slotInfo?.color || 'Slot attribue';
+  const incidentItems = getKitchenIncidentItems(order);
 
   return (
     <article
@@ -2225,6 +2415,13 @@ function ServerOrderCard({
 
         <p className="server-order-id">{order.id}</p>
 
+        {incidentItems.length > 0 && (
+          <div className="server-order-incident-alert">
+            <strong>Incident cuisine</strong>
+            <span>{getKitchenIncidentLabel(order)} - client a consulter</span>
+          </div>
+        )}
+
         {stage === 'pickup' ? (
           <div className="server-ready-meta">
             <div className="server-ready-slot" style={{ '--slot-accent': slotAccent }}>
@@ -2248,14 +2445,22 @@ function ServerOrderCard({
         ) : null}
 
         <ul className="server-compact-items">
-        {visibleItems.map((item) => (
-          <li key={`${order.id}-${item.id}`}>
-            <span>
-              {item.quantity}x {item.name}
-              {isRewardFreeItem(item) ? ' - Gratuit' : ''}
+        {visibleItems.map((item, index) => {
+          const itemHasIncident = isKitchenIncidentItem(item);
+
+          return (
+          <li className={itemHasIncident ? 'server-line-cancelled' : ''} key={`${order.id}-${item.id}-${index}`}>
+            <span className="server-order-line-text">
+              {itemHasIncident ? <span className="server-incident-line-icon" aria-hidden="true">!</span> : null}
+              <span>
+                {item.quantity}x {item.name}
+                {isRewardFreeItem(item) ? ' - Gratuit' : ''}
+                {itemHasIncident ? ` - Annule (${item.cancellationReason || 'motif cuisine'})` : ''}
+              </span>
             </span>
           </li>
-        ))}
+          );
+        })}
         {order.items.length > visibleItems.length && (
           <li>
             <span>+{order.items.length - visibleItems.length} autre(s)</span>
@@ -2320,9 +2525,12 @@ function ServerOrderCard({
 function SelectedOrderPanel({
   order,
   billRequest,
+  menuCatalog = [],
   primaryDisabled,
   onEditItem,
   onPrimary,
+  onAddReplacement,
+  onCancelOrder,
   onReject,
   onPaymentMethodChange,
   onServerCommentChange,
@@ -2344,8 +2552,10 @@ function SelectedOrderPanel({
   const stage = getOrderStage(order);
   const billReady = isServedOrder(order);
   const orderedProductIds = new Set(order.items.filter((item) => !item.isRewardItem).map((item) => item.id));
-  const productsToAdd = menuProducts.filter((product) => !orderedProductIds.has(product.id));
+  const productsToAdd = menuCatalog.filter((product) => !orderedProductIds.has(product.id));
   const discountAmount = getOrderDiscountAmount(order);
+  const incidentItems = getKitchenIncidentItems(order);
+  const orderHasIncident = incidentItems.length > 0;
 
   return (
     <section className="server-payment-card server-selected-order-card">
@@ -2361,21 +2571,74 @@ function SelectedOrderPanel({
       <div className="server-panel-section">
         <h3>Articles</h3>
         <div className="server-payment-items">
-          {order.items.map((item) => (
-            <div className="payment-item-row" key={`selected-${order.id}-${item.id}`}>
+          {order.items.map((item, index) => {
+            const itemHasIncident = isKitchenIncidentItem(item);
+
+            return (
+            <div
+              className={`payment-item-row ${itemHasIncident ? 'server-line-cancelled' : ''}`}
+              key={`selected-${order.id}-${item.id}-${index}`}
+            >
               <div>
-                <strong>{item.name}</strong>
+                <strong className="server-order-line-text">
+                  {itemHasIncident ? <span className="server-incident-line-icon" aria-hidden="true">!</span> : null}
+                  <span>{item.name}</span>
+                </strong>
                 <span>
                   {item.quantity} x {formatPrice(item.price)}
                 </span>
                 {isRewardFreeItem(item) && <small className="server-item-inline-tag">Gratuit</small>}
+                {itemHasIncident && (
+                  <small className="server-item-inline-tag server-item-cancelled-tag">
+                    Annule cuisine: {item.cancellationReason || 'motif non precise'}
+                  </small>
+                )}
               </div>
               <strong>{isRewardFreeItem(item) ? '0 MAD' : formatPrice(item.price * item.quantity)}</strong>
             </div>
-          ))}
+            );
+          })}
         </div>
         {order.rewardNote && <p className="server-reward-note">{order.rewardNote}</p>}
       </div>
+
+      {orderHasIncident && (
+        <section className="server-incident-panel">
+          <div>
+            <span>Incident cuisine</span>
+            <h3>Decision client requise</h3>
+            <p>
+              La cuisine a retire un article. Le total est deja recalcule. Consulte le
+              client avant de continuer le service.
+            </p>
+          </div>
+          <ul>
+            {incidentItems.map((item, index) => (
+              <li key={`incident-line-${order.id}-${item.id}-${index}`}>
+                <strong className="server-order-line-text">
+                  <span className="server-incident-line-icon" aria-hidden="true">!</span>
+                  <span>{item.name}</span>
+                </strong>
+                <span>
+                  {item.quantity} x annule - {item.cancellationReason || 'motif cuisine'}
+                </span>
+              </li>
+            ))}
+          </ul>
+          <div className="server-incident-actions">
+            <button className="btn btn-secondary" type="button" onClick={onAddReplacement}>
+              Remplacer article
+            </button>
+            <button className="btn btn-danger" type="button" onClick={onCancelOrder}>
+              Annuler commande
+            </button>
+          </div>
+          <small>
+            Si le client accepte la suppression, aucune action supplementaire n'est necessaire:
+            l'addition utilise deja le nouveau total.
+          </small>
+        </section>
+      )}
 
       {stage === 'validate' && (
         <details className="server-panel-edit-card">
@@ -2388,7 +2651,7 @@ function SelectedOrderPanel({
             <strong className="server-edit-title">Articles dans la commande</strong>
             <div className="server-edit-current-list">
               {order.items.map((item) => {
-                const product = menuProducts.find((menuProduct) => menuProduct.id === item.id) || item;
+                const product = menuCatalog.find((menuProduct) => menuProduct.id === item.id) || item;
 
                 return (
                   <div className="server-edit-current-row" key={`edit-current-${order.id}-${item.id}`}>
@@ -2397,6 +2660,11 @@ function SelectedOrderPanel({
                       <span>
                         {item.quantity} x {formatPrice(item.price)}
                       </span>
+                      {product.available === false && (
+                        <small className="server-product-unavailable">
+                          {product.unavailableReason || 'Indisponible temporairement'}
+                        </small>
+                      )}
                       {isRewardFreeItem(item) && <small className="server-item-inline-tag">Gratuit</small>}
                     </div>
                     {isRewardFreeItem(item) ? (
@@ -2414,6 +2682,7 @@ function SelectedOrderPanel({
                         <span>{item.quantity}</span>
                         <button
                           aria-label={`Ajouter ${item.name}`}
+                          disabled={product.available === false}
                           type="button"
                           onClick={() => onEditItem(order, product, 1)}
                         >
@@ -2438,13 +2707,19 @@ function SelectedOrderPanel({
                       <span>
                         {formatPrice(product.price)} - {product.points} pts
                       </span>
+                      {product.available === false && (
+                        <small className="server-product-unavailable">
+                          {product.unavailableReason || 'Indisponible temporairement'}
+                        </small>
+                      )}
                     </div>
                     <button
                       className="btn btn-secondary server-edit-add-button"
+                      disabled={product.available === false}
                       type="button"
                       onClick={() => onEditItem(order, product, 1)}
                     >
-                      Ajouter
+                      {product.available === false ? 'Indisponible' : 'Ajouter'}
                     </button>
                   </div>
                 ))}
@@ -2501,9 +2776,15 @@ function SelectedOrderPanel({
         </div>
       )}
 
-      {stage === 'kitchen' && (
+      {stage === 'kitchen' && !orderHasIncident && (
         <p className="server-card-note">
           Commande en preparation. Aucune action serveur pour le moment.
+        </p>
+      )}
+
+      {stage === 'kitchen' && orderHasIncident && (
+        <p className="server-card-note server-card-note-warning">
+          Action serveur: consulter le client pour remplacer, supprimer ou annuler.
         </p>
       )}
 

@@ -103,6 +103,7 @@ public class OrderService {
             if (!item.isAvailable()) {
                 throw new BadRequestException("Produit non disponible: " + item.getName());
             }
+            ensureEnoughStock(item, lineRequest.quantity());
             order.addLine(new OrderLine(item, lineRequest.quantity()));
         }
 
@@ -139,6 +140,13 @@ public class OrderService {
 
         if (request.status() == OrderStatus.SERVED) {
             kitchenService.releaseCounterSlotForOrder(order.getId());
+        }
+
+        if (request.status() == OrderStatus.CANCELLED) {
+            String reason = request.serverComment() == null || request.serverComment().isBlank()
+                    ? "Annulee par le serveur"
+                    : request.serverComment();
+            kitchenService.cancelKitchenItemsForServerDecision(order, reason);
         }
 
         if (request.status() == OrderStatus.PAID || request.status() == OrderStatus.CANCELLED) {
@@ -193,6 +201,7 @@ public class OrderService {
             if (!item.isAvailable()) {
                 throw new BadRequestException("Produit non disponible: " + item.getName());
             }
+            ensureEnoughStock(item, lineRequest.quantity());
             order.addLine(new OrderLine(item, lineRequest.quantity()));
         }
 
@@ -271,5 +280,14 @@ public class OrderService {
             return null;
         }
         return requestedPhone.trim();
+    }
+
+    private void ensureEnoughStock(MenuItem item, int requestedQuantity) {
+        Integer stockQuantity = item.getStockQuantity();
+        if (stockQuantity != null && requestedQuantity > stockQuantity) {
+            throw new BadRequestException(
+                    "Stock insuffisant pour " + item.getName() + ". Disponible: " + stockQuantity
+            );
+        }
     }
 }

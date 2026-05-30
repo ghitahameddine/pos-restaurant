@@ -6,6 +6,7 @@ import com.pos2.restaurant.dto.RestaurantStateRequest;
 import com.pos2.restaurant.dto.RestaurantStateResponse;
 import com.pos2.restaurant.dto.StaffRequest;
 import com.pos2.restaurant.dto.StaffResponse;
+import com.pos2.restaurant.dto.UserAccountResponse;
 import com.pos2.restaurant.service.AdminService;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -40,6 +41,11 @@ public class AdminController {
         return adminService.getStaff();
     }
 
+    @GetMapping("/users")
+    public List<UserAccountResponse> getUsers() {
+        return adminService.getUsers();
+    }
+
     @PostMapping("/staff")
     @ResponseStatus(HttpStatus.CREATED)
     public StaffResponse createStaff(@RequestBody StaffRequest request) {
@@ -55,6 +61,23 @@ public class AdminController {
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void deactivateStaff(@PathVariable Long id) {
         adminService.deactivateStaff(id);
+    }
+
+    @DeleteMapping("/staff/{id}/permanent")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void deleteStaffPermanently(@PathVariable Long id) {
+        adminService.deleteUserPermanently(id);
+    }
+
+    @PatchMapping("/users/{id}/deactivate")
+    public UserAccountResponse deactivateUser(@PathVariable Long id) {
+        return adminService.deactivateUser(id);
+    }
+
+    @DeleteMapping("/users/{id}/permanent")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void deleteUserPermanently(@PathVariable Long id) {
+        adminService.deleteUserPermanently(id);
     }
 
     @GetMapping("/restaurant-state")

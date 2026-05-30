@@ -11,6 +11,7 @@ import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 
 @Entity
 @Table(name = "order_lines")
@@ -42,6 +43,14 @@ public class OrderLine {
 
     @Column(nullable = false, precision = 10, scale = 2)
     private BigDecimal lineTotal;
+
+    @Column(nullable = false, columnDefinition = "boolean default false")
+    private boolean cancelled = false;
+
+    @Column(length = 300)
+    private String cancellationReason;
+
+    private Instant cancelledAt;
 
     protected OrderLine() {
     }
@@ -93,5 +102,23 @@ public class OrderLine {
 
     public BigDecimal getLineTotal() {
         return lineTotal;
+    }
+
+    public boolean isCancelled() {
+        return cancelled;
+    }
+
+    public String getCancellationReason() {
+        return cancellationReason;
+    }
+
+    public Instant getCancelledAt() {
+        return cancelledAt;
+    }
+
+    public void cancel(String reason) {
+        this.cancelled = true;
+        this.cancellationReason = reason;
+        this.cancelledAt = Instant.now();
     }
 }

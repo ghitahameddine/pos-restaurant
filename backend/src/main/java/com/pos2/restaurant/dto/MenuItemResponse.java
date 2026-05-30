@@ -14,7 +14,9 @@ public record MenuItemResponse(
         String description,
         String details,
         String imageUrl,
-        boolean available
+        boolean available,
+        Integer stockQuantity,
+        String unavailableReason
 ) {
     public static MenuItemResponse fromEntity(MenuItem item) {
         return new MenuItemResponse(
@@ -27,7 +29,9 @@ public record MenuItemResponse(
                 item.getDescription(),
                 item.getDetails(),
                 item.getImageUrl(),
-                item.isAvailable()
+                item.isAvailable(),
+                item.getStockQuantity(),
+                item.getUnavailableReason()
         );
     }
 }

@@ -14,10 +14,13 @@ import com.pos2.restaurant.dto.RestaurantStateRequest;
 import com.pos2.restaurant.dto.RestaurantStateResponse;
 import com.pos2.restaurant.dto.StaffRequest;
 import com.pos2.restaurant.dto.StaffResponse;
+import com.pos2.restaurant.dto.UserAccountResponse;
 import com.pos2.restaurant.exception.BadRequestException;
 import com.pos2.restaurant.exception.ResourceNotFoundException;
 import com.pos2.restaurant.repository.BillRequestRepository;
 import com.pos2.restaurant.repository.CustomerOrderRepository;
+import com.pos2.restaurant.repository.LoyaltyTransactionRepository;
+import com.pos2.restaurant.repository.MenuItemRepository;
 import com.pos2.restaurant.repository.RestaurantStateRepository;
 import com.pos2.restaurant.repository.RestaurantTableRepository;
 import com.pos2.restaurant.repository.UserRepository;
@@ -47,6 +50,8 @@ public class AdminService {
     private final RestaurantTableRepository tableRepository;
     private final BillRequestRepository billRequestRepository;
     private final UserRepository userRepository;
+    private final LoyaltyTransactionRepository loyaltyTransactionRepository;
+    private final MenuItemRepository menuItemRepository;
     private final RestaurantStateRepository restaurantStateRepository;
     private final PasswordEncoder passwordEncoder;
     private final KitchenService kitchenService;
@@ -57,6 +62,8 @@ public class AdminService {
             RestaurantTableRepository tableRepository,
             BillRequestRepository billRequestRepository,
             UserRepository userRepository,
+            LoyaltyTransactionRepository loyaltyTransactionRepository,
+            MenuItemRepository menuItemRepository,
             RestaurantStateRepository restaurantStateRepository,
             PasswordEncoder passwordEncoder,
             KitchenService kitchenService,
@@ -66,6 +73,8 @@ public class AdminService {
         this.tableRepository = tableRepository;
         this.billRequestRepository = billRequestRepository;
         this.userRepository = userRepository;
+        this.loyaltyTransactionRepository = loyaltyTransactionRepository;
+        this.menuItemRepository = menuItemRepository;
         this.restaurantStateRepository = restaurantStateRepository;
         this.passwordEncoder = passwordEncoder;
         this.kitchenService = kitchenService;
@@ -104,6 +113,20 @@ public class AdminService {
                 .filter(table -> table.getStatus() == TableStatus.PAID_STILL_SEATED)
                 .count();
         long billRequests = billRequestRepository.findByStatusOrderByCreatedAtDesc(BillRequestStatus.PENDING).size();
+        List<User> users = userRepository.findAll();
+        long clientUsers = users.stream()
+                .filter(user -> user.getRole() == UserRole.CLIENT)
+                .count();
+        long staffUsers = users.stream()
+                .filter(user -> user.getRole() != UserRole.CLIENT)
+                .count();
+        long ordersWithAccount = orders.stream()
+                .filter(order -> order.getClientPhone() != null && !order.getClientPhone().isBlank())
+                .count();
+        long ordersWithoutAccount = orders.size() - ordersWithAccount;
+        long unavailableMenuItems = menuItemRepository.findAll().stream()
+                .filter(item -> !item.isAvailable())
+                .count();
         BigDecimal salesToday = orders.stream()
                 .filter(order -> order.getStatus() == OrderStatus.PAID)
                 .filter(order -> order.getUpdatedAt().isAfter(startOfDay))
@@ -119,6 +142,12 @@ public class AdminService {
                 paidStillSeatedTables,
                 billRequests,
                 kitchenDelayedOrders,
+                users.size(),
+                clientUsers,
+                staffUsers,
+                ordersWithAccount,
+                ordersWithoutAccount,
+                unavailableMenuItems,
                 salesToday,
                 RestaurantStateResponse.fromEntity(getOrCreateRestaurantState())
         );
@@ -129,6 +158,13 @@ public class AdminService {
         return userRepository.findAll().stream()
                 .filter(user -> user.getRole() != UserRole.CLIENT)
                 .map(StaffResponse::fromEntity)
+                .toList();
+    }
+
+    @Transactional(readOnly = true)
+    public List<UserAccountResponse> getUsers() {
+        return userRepository.findAll().stream()
+                .map(UserAccountResponse::fromEntity)
                 .toList();
     }
 
@@ -183,6 +219,24 @@ public class AdminService {
                 .orElseThrow(() -> new ResourceNotFoundException("Staff introuvable: " + id));
         user.setActive(false);
         userRepository.save(user);
+    }
+
+    @Transactional
+    public UserAccountResponse deactivateUser(Long id) {
+        User user = userRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Utilisateur introuvable: " + id));
+        user.setActive(false);
+        return UserAccountResponse.fromEntity(userRepository.save(user));
+    }
+
+    @Transactional
+    public void deleteUserPermanently(Long id) {
+        User user = userRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Utilisateur introuvable: " + id));
+        if (loyaltyTransactionRepository.existsByUser_Id(id)) {
+            throw new BadRequestException("Ce compte a un historique fidelite. Desactivez-le au lieu de le supprimer.");
+        }
+        userRepository.delete(user);
     }
 
     @Transactional

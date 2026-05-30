@@ -7,4 +7,6 @@ import java.util.List;
 
 public interface LoyaltyTransactionRepository extends JpaRepository<LoyaltyTransaction, Long> {
     List<LoyaltyTransaction> findByUser_PhoneOrderByCreatedAtDesc(String phone);
+
+    boolean existsByUser_Id(Long userId);
 }
