@@ -11,9 +11,33 @@ import {
 const OTP_CODE = '1234';
 const PHONE_STORAGE_KEY = 'pos2-client-phone';
 const AUTH_STORAGE_KEY = 'pos2-client-auth';
+const MODE_COPY = {
+  login: {
+    title: 'Se connecter',
+    description: 'Connectez-vous avec votre telephone et votre mot de passe pour garder vos points.',
+  },
+  register: {
+    title: 'Creer un compte',
+    description: 'Verifiez votre telephone avec le code OTP, puis choisissez un mot de passe.',
+  },
+  forgot: {
+    title: 'Reinitialiser le mot de passe',
+    description: 'Entrez votre telephone. Le systeme envoie un code OTP simule pour proteger le compte.',
+  },
+  reset: {
+    title: 'Nouveau mot de passe',
+    description: 'Saisissez le code OTP recu, puis choisissez un nouveau mot de passe.',
+  },
+};
 
 function ClientAuth({ initialMode = 'sign-in', onAuthenticated, onBackToMenu }) {
-  const [mode, setMode] = useState(initialMode === 'sign-up' ? 'register' : 'login');
+  const getInitialAuthMode = (value) => {
+    if (value === 'sign-up') return 'register';
+    if (value === 'reset-password') return 'forgot';
+    return 'login';
+  };
+
+  const [mode, setMode] = useState(() => getInitialAuthMode(initialMode));
   const [phone, setPhone] = useState(() => localStorage.getItem(PHONE_STORAGE_KEY) || '');
   const [name, setName] = useState('');
   const [otp, setOtp] = useState('');
@@ -25,11 +49,30 @@ function ClientAuth({ initialMode = 'sign-in', onAuthenticated, onBackToMenu }) 
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    setMode(initialMode === 'sign-up' ? 'register' : 'login');
+    setMode(getInitialAuthMode(initialMode));
     setOtpSent(false);
     setError('');
     setMessage('');
   }, [initialMode]);
+
+  const goToMode = (nextMode) => {
+    setMode(nextMode);
+    setError('');
+    setMessage('');
+
+    if (nextMode === 'login') {
+      setOtpSent(false);
+      setOtp('');
+      setNewPassword('');
+    }
+
+    if (nextMode === 'register') {
+      setOtpSent(false);
+      setOtp('');
+      setPassword('');
+      setNewPassword('');
+    }
+  };
 
   const rememberAuth = (auth) => {
     if (auth.role !== 'CLIENT') {
@@ -141,9 +184,11 @@ function ClientAuth({ initialMode = 'sign-in', onAuthenticated, onBackToMenu }) 
       const response = await forgotPasswordApi({ phone: phone.trim() });
       setOtpSent(true);
       setMode('reset');
+      setOtp('');
+      setNewPassword('');
       setMessage(response.message || `Code envoye : ${OTP_CODE}`);
     } catch (apiError) {
-      setError(apiError.message || 'Impossible de recuperer le compte.');
+      setError(await getAuthErrorMessage(apiError));
     } finally {
       setLoading(false);
     }
@@ -182,39 +227,22 @@ function ClientAuth({ initialMode = 'sign-in', onAuthenticated, onBackToMenu }) 
     <section className="client-auth-card auth-flow-card">
       <div>
         <p className="eyebrow">Compte client</p>
-        <h2>
-          {mode === 'register' && 'Creer un compte'}
-          {mode === 'login' && 'Se connecter'}
-          {mode === 'forgot' && 'Mot de passe oublie'}
-          {mode === 'reset' && 'Nouveau mot de passe'}
-        </h2>
-        <p>
-          {mode === 'register'
-            ? 'Verifiez votre telephone avec OTP, puis choisissez un mot de passe.'
-            : 'Utilisez votre telephone et votre mot de passe pour garder vos recompenses.'}
-        </p>
+        <h2>{MODE_COPY[mode].title}</h2>
+        <p>{MODE_COPY[mode].description}</p>
       </div>
 
       <div className="auth-mode-tabs">
         <button
           className={mode === 'login' ? 'is-active' : ''}
           type="button"
-          onClick={() => {
-            setMode('login');
-            setOtpSent(false);
-            setError('');
-          }}
+          onClick={() => goToMode('login')}
         >
           Connexion
         </button>
         <button
           className={mode === 'register' ? 'is-active' : ''}
           type="button"
-          onClick={() => {
-            setMode('register');
-            setOtpSent(false);
-            setError('');
-          }}
+          onClick={() => goToMode('register')}
         >
           Inscription
         </button>
@@ -286,27 +314,31 @@ function ClientAuth({ initialMode = 'sign-in', onAuthenticated, onBackToMenu }) 
             />
           </label>
           <button className="primary-button" disabled={loading} type="button" onClick={submitLogin}>
-            Se connecter
+            {loading ? 'Connexion...' : 'Se connecter'}
           </button>
-          <button className="auth-text-button" type="button" onClick={() => setMode('forgot')}>
-            Mot de passe oublie ?
+          <button className="auth-text-button" type="button" onClick={() => goToMode('forgot')}>
+            Reinitialiser mon mot de passe
           </button>
         </>
       )}
 
       {mode === 'forgot' && (
         <>
+          <p className="auth-helper">
+            Le code de test est toujours 1234. Aucun SMS reel n est envoye pour le moment.
+          </p>
           <button className="primary-button" disabled={loading} type="button" onClick={submitForgotPassword}>
-            Recuperer le code OTP
+            {loading ? 'Envoi...' : 'Envoyer le code OTP'}
           </button>
-          <button className="auth-text-button" type="button" onClick={() => setMode('login')}>
-            Retour connexion
+          <button className="auth-text-button" type="button" onClick={() => goToMode('login')}>
+            Retour a la connexion
           </button>
         </>
       )}
 
       {mode === 'reset' && (
         <>
+          <p className="auth-helper">Code envoye : 1234</p>
           <label className="field">
             Code OTP
             <input
@@ -326,7 +358,10 @@ function ClientAuth({ initialMode = 'sign-in', onAuthenticated, onBackToMenu }) 
             />
           </label>
           <button className="primary-button" disabled={loading} type="button" onClick={submitResetPassword}>
-            Modifier le mot de passe
+            {loading ? 'Modification...' : 'Valider le nouveau mot de passe'}
+          </button>
+          <button className="auth-text-button" disabled={loading} type="button" onClick={submitForgotPassword}>
+            Renvoyer le code OTP
           </button>
         </>
       )}

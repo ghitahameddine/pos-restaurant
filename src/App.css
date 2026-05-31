@@ -3040,6 +3040,23 @@ h3 {
   text-decoration: underline;
 }
 
+.auth-text-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.auth-helper {
+  background: rgba(184, 144, 57, 0.1);
+  border: 1px solid rgba(184, 144, 57, 0.2);
+  border-radius: 14px;
+  color: #5f4334;
+  font-family: Inter, sans-serif;
+  font-size: 0.94rem;
+  line-height: 1.45;
+  margin: 0;
+  padding: 12px 14px;
+}
+
 .client-order-list {
   display: grid;
   gap: 12px;

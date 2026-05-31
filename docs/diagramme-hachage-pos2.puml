@@ -1,0 +1,34 @@
+@startuml
+title Module de hachage des mots de passe - POS2 Restaurant
+
+actor "Utilisateur\n(Client / Serveur / Admin)" as User
+boundary "Interface React" as React
+control "AuthController" as Controller
+control "AuthService" as Service
+control "PasswordEncoder\nBCrypt" as Encoder
+database "MySQL\nTable users" as DB
+
+== Inscription ==
+User -> React : Saisir téléphone, OTP,\nnom et mot de passe
+React -> Controller : POST /api/auth/register
+Controller -> Service : registerClient(request)
+Service -> Service : Vérifier OTP
+Service -> Encoder : encode(password)
+Encoder --> Service : passwordHash
+Service -> DB : Sauvegarder user\navec passwordHash
+DB --> Service : User créé
+Service --> Controller : AuthResponse
+Controller --> React : Informations utilisateur
+
+== Connexion ==
+User -> React : Saisir téléphone\net mot de passe
+React -> Controller : POST /api/auth/login
+Controller -> Service : login(request)
+Service -> DB : findByPhone(phone)
+DB --> Service : User + passwordHash
+Service -> Encoder : matches(password, passwordHash)
+Encoder --> Service : true / false
+Service --> Controller : AuthResponse ou erreur
+Controller --> React : Connexion acceptée ou refusée
+
+@enduml

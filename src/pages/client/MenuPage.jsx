@@ -832,6 +832,11 @@ function MenuPage() {
     setStep(MENU_STEP);
   };
 
+  const openPasswordReset = () => {
+    setAccessMode('reset-password');
+    setStep(AUTH_STEP);
+  };
+
   const removeOneFromCart = (productId) => {
     setCart((currentCart) =>
       currentCart
@@ -1580,14 +1585,24 @@ function MenuPage() {
                     </button>
                   </>
                 ) : (
-                  <button type="button" onClick={logoutClient}>
-                    <ClientIcon name="user" />
-                    <div>
-                      <span>Se deconnecter</span>
-                      <small>Fermer la session du compte</small>
-                    </div>
-                    <ClientIcon name="arrow" />
-                  </button>
+                  <>
+                    <button type="button" onClick={openPasswordReset}>
+                      <ClientIcon name="user" />
+                      <div>
+                        <span>Reinitialiser mot de passe</span>
+                        <small>Recevoir le code OTP et choisir un nouveau mot de passe</small>
+                      </div>
+                      <ClientIcon name="arrow" />
+                    </button>
+                    <button type="button" onClick={logoutClient}>
+                      <ClientIcon name="user" />
+                      <div>
+                        <span>Se deconnecter</span>
+                        <small>Fermer la session du compte</small>
+                      </div>
+                      <ClientIcon name="arrow" />
+                    </button>
+                  </>
                 )}
                 <div className="client-table-information">
                   <ClientIcon name="table" />

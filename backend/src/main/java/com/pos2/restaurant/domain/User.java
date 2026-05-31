@@ -24,7 +24,7 @@ public class User {
     private String phone;
 
     @Column(nullable = false)
-    private String passwordHash;
+    private String passwordHash;   //MOT DE PASSE HACHE UNIQUEMENT
 
     @Column(nullable = false)
     private String name;

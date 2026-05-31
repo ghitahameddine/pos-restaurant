@@ -1,0 +1,645 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <title>Rapport - Hachage de mots de passe POS2</title>
+  <style>
+    @page { size: A4; margin: 22mm 18mm; }
+    body { font-family: Calibri, Arial, sans-serif; color: #1d1d1d; line-height: 1.45; }
+    h1 { font-size: 28px; margin: 0 0 18px; color: #2f1d19; }
+    h2 { font-size: 22px; margin: 26px 0 10px; color: #2f1d19; border-bottom: 1px solid #ddd; padding-bottom: 5px; }
+    h3 { font-size: 17px; margin: 18px 0 8px; color: #2f1d19; }
+    p { margin: 0 0 8px; }
+    li { margin: 4px 0 4px 20px; }
+    pre { background: #f4f1e8; border: 1px solid #ded6c2; border-radius: 6px; padding: 10px; white-space: pre-wrap; font-family: Consolas, monospace; font-size: 12px; }
+    .table-line { margin: 2px 0; background: #faf7ef; border: 0; padding: 2px 6px; }
+    hr { border: 0; border-top: 1px solid #ddd; margin: 18px 0; }
+    .spacer { height: 6px; }
+  </style>
+</head>
+<body>
+<h1>Rapport de projet : Hachage de mots de passe dans POS2 Restaurant</h1>
+<p class="spacer"></p>
+<h2>Page de garde</h2>
+<p class="spacer"></p>
+<p>Projet : Hachage de mots de passe  </p>
+<p>Application support : POS2 Restaurant  </p>
+<p>Technologies : React, Vite, Spring Boot, MySQL  </p>
+<p>Module &#233;tudi&#233; : Authentification client, serveur et administrateur  </p>
+<p>R&#233;alis&#233; par : ........................................  </p>
+<p>Encadr&#233; par : ........................................  </p>
+<p>Ann&#233;e universitaire : 2025 / 2026</p>
+<p class="spacer"></p>
+<hr />
+<p class="spacer"></p>
+<h2>1. Description claire du projet</h2>
+<p class="spacer"></p>
+<h3>1.1 Contexte g&#233;n&#233;ral</h3>
+<p class="spacer"></p>
+<p>Le projet POS2 Restaurant est une application web de gestion de restaurant. Elle permet au client de consulter le menu &#224; partir d&#39;un QR code, de passer une commande depuis son t&#233;l&#233;phone, puis au serveur de valider cette commande avant son passage en cuisine. L&#39;application contient aussi une interface serveur, une interface cuisine et une interface administrateur.</p>
+<p class="spacer"></p>
+<p>Dans ce type de syst&#232;me, plusieurs utilisateurs doivent se connecter :</p>
+<p class="spacer"></p>
+<li>le client, pour garder son historique et ses points de fid&#233;lit&#233; ;</li>
+<li>le serveur, pour g&#233;rer les commandes et les paiements ;</li>
+<li>l&#39;administrateur, pour g&#233;rer le menu, les tables, les comptes et les param&#232;tres du restaurant.</li>
+<p class="spacer"></p>
+<p>Ces utilisateurs utilisent un num&#233;ro de t&#233;l&#233;phone et un mot de passe. Le mot de passe est donc une donn&#233;e sensible qui doit &#234;tre prot&#233;g&#233;e.</p>
+<p class="spacer"></p>
+<h3>1.2 Probl&#233;matique</h3>
+<p class="spacer"></p>
+<p>Un probl&#232;me important dans les applications web est le stockage des mots de passe. Si une application stocke les mots de passe en clair dans la base de donn&#233;es, une fuite de donn&#233;es peut exposer directement les comptes des utilisateurs.</p>
+<p class="spacer"></p>
+<p>Exemple dangereux :</p>
+<p class="spacer"></p>
+<pre class="table-line">| phone | password |</pre>
+<pre class="table-line">|---|---|</pre>
+<pre class="table-line">| 0600000000 | 1234 |</pre>
+<pre class="table-line">| 0611111111 | client123 |</pre>
+<p class="spacer"></p>
+<p>Dans ce cas, une personne qui acc&#232;de &#224; la base de donn&#233;es conna&#238;t imm&#233;diatement les mots de passe.</p>
+<p class="spacer"></p>
+<p>La question principale est donc :</p>
+<p class="spacer"></p>
+<p>Comment prot&#233;ger les mots de passe des utilisateurs dans une application POS restaurant, tout en gardant une authentification simple et utilisable ?</p>
+<p class="spacer"></p>
+<h3>1.3 Objectif du projet</h3>
+<p class="spacer"></p>
+<p>L&#39;objectif de ce travail est d&#39;impl&#233;menter et d&#39;expliquer le hachage de mots de passe dans le backend de POS2.</p>
+<p class="spacer"></p>
+<p>Le projet vise &#224; :</p>
+<p class="spacer"></p>
+<li>comprendre le r&#244;le d&#39;une fonction de hachage ;</li>
+<li>expliquer le principe de SHA-256 ;</li>
+<li>montrer pourquoi SHA-256 seul n&#39;est pas id&#233;al pour les mots de passe ;</li>
+<li>utiliser BCrypt comme solution plus adapt&#233;e ;</li>
+<li>stocker uniquement un hash dans MySQL ;</li>
+<li>v&#233;rifier le mot de passe lors de la connexion sans jamais le stocker en clair.</li>
+<p class="spacer"></p>
+<hr />
+<p class="spacer"></p>
+<h2>2. Notions th&#233;oriques</h2>
+<p class="spacer"></p>
+<h3>2.1 Qu&#39;est-ce que le hachage ?</h3>
+<p class="spacer"></p>
+<p>Le hachage est une op&#233;ration qui transforme une donn&#233;e en une empreinte num&#233;rique appel&#233;e hash. Cette empreinte a une taille fixe et ne permet pas normalement de retrouver le texte original.</p>
+<p class="spacer"></p>
+<p>Exemple simplifi&#233; :</p>
+<p class="spacer"></p>
+<pre><code>Mot de passe : 1234
+        ↓
+Fonction de hachage
+        ↓
+Hash : 03ac674216f3e15c...</code></pre>
+<p class="spacer"></p>
+<p>Le hachage est diff&#233;rent du chiffrement. Le chiffrement peut &#234;tre invers&#233; avec une cl&#233;, alors que le hachage est con&#231;u pour &#234;tre non r&#233;versible.</p>
+<p class="spacer"></p>
+<h3>2.2 R&#244;le de SHA-256</h3>
+<p class="spacer"></p>
+<p>SHA-256 est une fonction de hachage cryptographique. Elle transforme une donn&#233;e en une empreinte de 256 bits.</p>
+<p class="spacer"></p>
+<p>Elle est utilis&#233;e dans plusieurs domaines :</p>
+<p class="spacer"></p>
+<li>v&#233;rification d&#39;int&#233;grit&#233; de fichiers ;</li>
+<li>signatures num&#233;riques ;</li>
+<li>blockchain ;</li>
+<li>comparaison d&#39;empreintes.</li>
+<p class="spacer"></p>
+<p>Exemple avec SHA-256 :</p>
+<p class="spacer"></p>
+<pre><code>SHA-256(&quot;1234&quot;)
+= 03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4</code></pre>
+<p class="spacer"></p>
+<p>Cependant, pour les mots de passe, SHA-256 seul est insuffisant, car il est rapide. Un attaquant peut tester des millions de mots de passe par seconde avec des dictionnaires ou des attaques brute force.</p>
+<p class="spacer"></p>
+<h3>2.3 Pourquoi utiliser BCrypt ?</h3>
+<p class="spacer"></p>
+<p>BCrypt est plus adapt&#233; au stockage de mots de passe, car :</p>
+<p class="spacer"></p>
+<li>il ajoute un sel automatiquement ;</li>
+<li>il ralentit volontairement le calcul ;</li>
+<li>deux utilisateurs avec le m&#234;me mot de passe n&#39;auront pas le m&#234;me hash ;</li>
+<li>il est con&#231;u sp&#233;cialement pour les mots de passe.</li>
+<p class="spacer"></p>
+<p>Exemple :</p>
+<p class="spacer"></p>
+<pre><code>Mot de passe : 1234
+Hash BCrypt : $2a$10$7fNn...Vj3x</code></pre>
+<p class="spacer"></p>
+<p>Le hash BCrypt change &#224; chaque encodage gr&#226;ce au sel. Cela rend les attaques beaucoup plus difficiles.</p>
+<p class="spacer"></p>
+<p>Dans POS2, SHA-256 est donc pr&#233;sent&#233; comme une base th&#233;orique, mais l&#39;impl&#233;mentation r&#233;elle utilise BCrypt.</p>
+<p class="spacer"></p>
+<hr />
+<p class="spacer"></p>
+<h2>3. M&#233;thodologie de r&#233;alisation</h2>
+<p class="spacer"></p>
+<h3>3.1 Approche adopt&#233;e</h3>
+<p class="spacer"></p>
+<p>Le module de s&#233;curit&#233; est int&#233;gr&#233; au backend Spring Boot de POS2. L&#39;utilisateur saisit son num&#233;ro de t&#233;l&#233;phone et son mot de passe depuis l&#39;interface React. Le backend re&#231;oit ces informations, puis applique un traitement diff&#233;rent selon l&#39;action :</p>
+<p class="spacer"></p>
+<li>inscription : le mot de passe est hach&#233; avant stockage ;</li>
+<li>connexion : le mot de passe saisi est compar&#233; avec le hash stock&#233; ;</li>
+<li>mot de passe oubli&#233; : un OTP simul&#233; permet de d&#233;finir un nouveau mot de passe ;</li>
+<li>changement de mot de passe : le nouveau mot de passe est &#233;galement hach&#233;.</li>
+<p class="spacer"></p>
+<h3>3.2 Technologies utilis&#233;es</h3>
+<p class="spacer"></p>
+<pre class="table-line">| Technologie | R&#244;le |</pre>
+<pre class="table-line">|---|---|</pre>
+<pre class="table-line">| React + Vite | Interface utilisateur |</pre>
+<pre class="table-line">| Spring Boot | Backend et logique m&#233;tier |</pre>
+<pre class="table-line">| MySQL | Stockage des utilisateurs |</pre>
+<pre class="table-line">| BCrypt | Hachage s&#233;curis&#233; des mots de passe |</pre>
+<pre class="table-line">| JPA / Hibernate | Mapping entre Java et MySQL |</pre>
+<pre class="table-line">| Postman | Test des endpoints |</pre>
+<pre class="table-line">| Mermaid / PlantUML | Sch&#233;mas explicatifs |</pre>
+<p class="spacer"></p>
+<h3>3.3 Architecture du module</h3>
+<p class="spacer"></p>
+<p>Le module respecte une architecture en couches :</p>
+<p class="spacer"></p>
+<pre><code>React
+  ↓
+AuthController
+  ↓
+AuthService
+  ↓
+UserRepository
+  ↓
+MySQL</code></pre>
+<p class="spacer"></p>
+<p>Chaque couche a un r&#244;le pr&#233;cis :</p>
+<p class="spacer"></p>
+<li>Controller : re&#231;oit les requ&#234;tes HTTP ;</li>
+<li>Service : contient la logique m&#233;tier ;</li>
+<li>Repository : communique avec la base de donn&#233;es ;</li>
+<li>Entity : repr&#233;sente la table users.</li>
+<p class="spacer"></p>
+<hr />
+<p class="spacer"></p>
+<h2>4. Impl&#233;mentation dans POS2</h2>
+<p class="spacer"></p>
+<h3>4.1 Entit&#233; User</h3>
+<p class="spacer"></p>
+<p>L&#39;entit&#233; User repr&#233;sente les utilisateurs du syst&#232;me. Elle contient un champ passwordHash, et non pas un champ password.</p>
+<p class="spacer"></p>
+<p>Fichier :</p>
+<p class="spacer"></p>
+<pre><code>backend/src/main/java/com/pos2/restaurant/domain/User.java</code></pre>
+<p class="spacer"></p>
+<p>Champs principaux :</p>
+<p class="spacer"></p>
+<pre><code>id
+phone
+passwordHash
+name
+role
+points
+active
+assignedTables
+createdAt</code></pre>
+<p class="spacer"></p>
+<p>Le champ important est :</p>
+<p class="spacer"></p>
+<pre><code>private String passwordHash;</code></pre>
+<p class="spacer"></p>
+<p>Cela signifie que le mot de passe en clair n&#39;est pas stock&#233;.</p>
+<p class="spacer"></p>
+<h3>4.2 Configuration BCrypt</h3>
+<p class="spacer"></p>
+<p>Le projet d&#233;clare un PasswordEncoder bas&#233; sur BCrypt.</p>
+<p class="spacer"></p>
+<p>Fichier :</p>
+<p class="spacer"></p>
+<pre><code>backend/src/main/java/com/pos2/restaurant/config/PasswordConfig.java</code></pre>
+<p class="spacer"></p>
+<p>Code utilis&#233; :</p>
+<p class="spacer"></p>
+<pre><code>@Configuration
+public class PasswordConfig {
+
+    @Bean
+    public PasswordEncoder passwordEncoder() {
+        return new BCryptPasswordEncoder();
+    }
+}</code></pre>
+<p class="spacer"></p>
+<p>Ce bean est ensuite inject&#233; dans AuthService.</p>
+<p class="spacer"></p>
+<h3>4.3 Inscription d&#39;un client</h3>
+<p class="spacer"></p>
+<p>Lorsqu&#39;un client cr&#233;e un compte, il saisit :</p>
+<p class="spacer"></p>
+<li>son num&#233;ro de t&#233;l&#233;phone ;</li>
+<li>un code OTP simul&#233; ;</li>
+<li>son nom ;</li>
+<li>son mot de passe.</li>
+<p class="spacer"></p>
+<p>Fichier DTO :</p>
+<p class="spacer"></p>
+<pre><code>backend/src/main/java/com/pos2/restaurant/dto/auth/RegisterRequest.java</code></pre>
+<p class="spacer"></p>
+<p>Le backend v&#233;rifie le code OTP, puis encode le mot de passe :</p>
+<p class="spacer"></p>
+<pre><code>passwordEncoder.encode(request.password())</code></pre>
+<p class="spacer"></p>
+<p>Le hash est ensuite stock&#233; dans la base :</p>
+<p class="spacer"></p>
+<pre><code>User user = new User(
+        request.phone(),
+        passwordEncoder.encode(request.password()),
+        request.name(),
+        UserRole.CLIENT
+);</code></pre>
+<p class="spacer"></p>
+<h3>4.4 Connexion d&#39;un utilisateur</h3>
+<p class="spacer"></p>
+<p>Lors de la connexion, le backend r&#233;cup&#232;re l&#39;utilisateur par t&#233;l&#233;phone. Ensuite il compare le mot de passe saisi avec le hash stock&#233;.</p>
+<p class="spacer"></p>
+<p>Fichier :</p>
+<p class="spacer"></p>
+<pre><code>backend/src/main/java/com/pos2/restaurant/service/AuthService.java</code></pre>
+<p class="spacer"></p>
+<p>Code principal :</p>
+<p class="spacer"></p>
+<pre><code>if (!passwordEncoder.matches(request.password(), user.getPasswordHash())) {
+    throw new BadRequestException(&quot;Mot de passe incorrect.&quot;);
+}</code></pre>
+<p class="spacer"></p>
+<p>Le mot de passe saisi n&#39;est pas stock&#233;. Il sert uniquement &#224; v&#233;rifier s&#39;il correspond au hash existant.</p>
+<p class="spacer"></p>
+<h3>4.5 R&#233;initialisation du mot de passe</h3>
+<p class="spacer"></p>
+<p>Le projet contient aussi un syst&#232;me simple de mot de passe oubli&#233; :</p>
+<p class="spacer"></p>
+<li>l&#39;utilisateur saisit son t&#233;l&#233;phone ;</li>
+<li>le backend simule l&#39;envoi du code OTP 1234 ;</li>
+<li>l&#39;utilisateur saisit un nouveau mot de passe ;</li>
+<li>le backend hache le nouveau mot de passe avant de le sauvegarder.</li>
+<p class="spacer"></p>
+<p>Code :</p>
+<p class="spacer"></p>
+<pre><code>user.setPasswordHash(passwordEncoder.encode(request.newPassword()));</code></pre>
+<p class="spacer"></p>
+<p>Cela garantit que m&#234;me apr&#232;s r&#233;initialisation, le mot de passe n&#39;est jamais stock&#233; en clair.</p>
+<p class="spacer"></p>
+<hr />
+<p class="spacer"></p>
+<h2>5. Endpoints utilis&#233;s</h2>
+<p class="spacer"></p>
+<h3>5.1 Inscription</h3>
+<p class="spacer"></p>
+<pre><code>POST /api/auth/register</code></pre>
+<p class="spacer"></p>
+<p>Exemple de requ&#234;te :</p>
+<p class="spacer"></p>
+<pre><code>{
+  &quot;phone&quot;: &quot;0611111111&quot;,
+  &quot;otp&quot;: &quot;1234&quot;,
+  &quot;password&quot;: &quot;1234&quot;,
+  &quot;name&quot;: &quot;youssef&quot;
+}</code></pre>
+<p class="spacer"></p>
+<p>R&#233;sultat attendu :</p>
+<p class="spacer"></p>
+<pre><code>{
+  &quot;userId&quot;: 1,
+  &quot;phone&quot;: &quot;0611111111&quot;,
+  &quot;name&quot;: &quot;youssef&quot;,
+  &quot;role&quot;: &quot;CLIENT&quot;,
+  &quot;points&quot;: 0,
+  &quot;assignedTables&quot;: null
+}</code></pre>
+<p class="spacer"></p>
+<h3>5.2 Connexion</h3>
+<p class="spacer"></p>
+<pre><code>POST /api/auth/login</code></pre>
+<p class="spacer"></p>
+<p>Exemple :</p>
+<p class="spacer"></p>
+<pre><code>{
+  &quot;phone&quot;: &quot;0611111111&quot;,
+  &quot;password&quot;: &quot;1234&quot;
+}</code></pre>
+<p class="spacer"></p>
+<h3>5.3 Mot de passe oubli&#233;</h3>
+<p class="spacer"></p>
+<pre><code>POST /api/auth/forgot-password</code></pre>
+<p class="spacer"></p>
+<p>Exemple :</p>
+<p class="spacer"></p>
+<pre><code>{
+  &quot;phone&quot;: &quot;0611111111&quot;
+}</code></pre>
+<p class="spacer"></p>
+<p>R&#233;sultat :</p>
+<p class="spacer"></p>
+<pre><code>{
+  &quot;message&quot;: &quot;Code envoye : 1234&quot;
+}</code></pre>
+<p class="spacer"></p>
+<h3>5.4 R&#233;initialisation</h3>
+<p class="spacer"></p>
+<pre><code>POST /api/auth/reset-password</code></pre>
+<p class="spacer"></p>
+<p>Exemple :</p>
+<p class="spacer"></p>
+<pre><code>{
+  &quot;phone&quot;: &quot;0611111111&quot;,
+  &quot;otp&quot;: &quot;1234&quot;,
+  &quot;newPassword&quot;: &quot;5678&quot;
+}</code></pre>
+<p class="spacer"></p>
+<hr />
+<p class="spacer"></p>
+<h2>6. Sch&#233;mas explicatifs</h2>
+<p class="spacer"></p>
+<h3>6.1 Sch&#233;ma du processus d&#39;inscription</h3>
+<p class="spacer"></p>
+<pre><code>flowchart TD
+    A[&quot;Client saisit t&#233;l&#233;phone, OTP et mot de passe&quot;] --&gt; B[&quot;React envoie la requ&#234;te au backend&quot;]
+    B --&gt; C[&quot;AuthController re&#231;oit /api/auth/register&quot;]
+    C --&gt; D[&quot;AuthService v&#233;rifie OTP&quot;]
+    D --&gt; E{&quot;T&#233;l&#233;phone d&#233;j&#224; utilis&#233; ?&quot;}
+    E -- Oui --&gt; F[&quot;Erreur : compte existe d&#233;j&#224;&quot;]
+    E -- Non --&gt; G[&quot;BCrypt hache le mot de passe&quot;]
+    G --&gt; H[&quot;UserRepository sauvegarde l&#39;utilisateur&quot;]
+    H --&gt; I[&quot;MySQL stocke passwordHash&quot;]
+    I --&gt; J[&quot;R&#233;ponse AuthResponse&quot;]</code></pre>
+<p class="spacer"></p>
+<h3>6.2 Sch&#233;ma du processus de connexion</h3>
+<p class="spacer"></p>
+<pre><code>flowchart TD
+    A[&quot;Utilisateur saisit t&#233;l&#233;phone et mot de passe&quot;] --&gt; B[&quot;React envoie /api/auth/login&quot;]
+    B --&gt; C[&quot;AuthController appelle AuthService&quot;]
+    C --&gt; D[&quot;Recherche utilisateur par t&#233;l&#233;phone&quot;]
+    D --&gt; E{&quot;Utilisateur trouv&#233; ?&quot;}
+    E -- Non --&gt; F[&quot;Erreur : utilisateur introuvable&quot;]
+    E -- Oui --&gt; G[&quot;BCrypt compare mot de passe saisi et passwordHash&quot;]
+    G --&gt; H{&quot;Correspondance ?&quot;}
+    H -- Non --&gt; I[&quot;Erreur : mot de passe incorrect&quot;]
+    H -- Oui --&gt; J[&quot;Connexion accept&#233;e&quot;]</code></pre>
+<p class="spacer"></p>
+<h3>6.3 Diagramme de composants</h3>
+<p class="spacer"></p>
+<pre><code>flowchart LR
+    UI[&quot;Frontend React&quot;] --&gt; CTRL[&quot;AuthController&quot;]
+    CTRL --&gt; SERVICE[&quot;AuthService&quot;]
+    SERVICE --&gt; ENCODER[&quot;PasswordEncoder BCrypt&quot;]
+    SERVICE --&gt; REPO[&quot;UserRepository&quot;]
+    REPO --&gt; DB[&quot;MySQL table users&quot;]</code></pre>
+<p class="spacer"></p>
+<h3>6.4 Diagramme de classes simplifi&#233;</h3>
+<p class="spacer"></p>
+<pre><code>@startuml
+class User {
+  Long id
+  String phone
+  String passwordHash
+  String name
+  UserRole role
+  int points
+  Boolean active
+  String assignedTables
+  Instant createdAt
+}
+
+enum UserRole {
+  CLIENT
+  WAITER
+  ADMIN
+  KITCHEN
+}
+
+class AuthController {
+  register(RegisterRequest)
+  login(LoginRequest)
+  forgotPassword(ForgotPasswordRequest)
+  resetPassword(ResetPasswordRequest)
+}
+
+class AuthService {
+  registerClient(RegisterRequest)
+  login(LoginRequest)
+  forgotPassword(ForgotPasswordRequest)
+  resetPassword(ResetPasswordRequest)
+}
+
+interface UserRepository {
+  findByPhone(String)
+  existsByPhone(String)
+}
+
+interface PasswordEncoder {
+  encode(String)
+  matches(String, String)
+}
+
+User --&gt; UserRole
+AuthController --&gt; AuthService
+AuthService --&gt; UserRepository
+AuthService --&gt; PasswordEncoder
+UserRepository --&gt; User
+@enduml</code></pre>
+<p class="spacer"></p>
+<hr />
+<p class="spacer"></p>
+<h2>7. Captures d&#39;&#233;cran &#224; ins&#233;rer</h2>
+<p class="spacer"></p>
+<p>Les captures suivantes sont recommand&#233;es pour rendre le rapport personnel et concret.</p>
+<p class="spacer"></p>
+<h3>Capture 1 : Interface de connexion client</h3>
+<p class="spacer"></p>
+<p>Ins&#233;rer une capture de la page o&#249; le client saisit son t&#233;l&#233;phone et son mot de passe.</p>
+<p class="spacer"></p>
+<pre><code>Exemple de nom : docs/screenshots/01-connexion-client.png</code></pre>
+<p class="spacer"></p>
+<h3>Capture 2 : Interface d&#39;inscription avec OTP</h3>
+<p class="spacer"></p>
+<p>Montrer le formulaire d&#39;inscription avec le code OTP simul&#233; 1234.</p>
+<p class="spacer"></p>
+<pre><code>Exemple de nom : docs/screenshots/02-inscription-otp.png</code></pre>
+<p class="spacer"></p>
+<h3>Capture 3 : Test Postman de l&#39;inscription</h3>
+<p class="spacer"></p>
+<p>Montrer la requ&#234;te :</p>
+<p class="spacer"></p>
+<pre><code>POST http://localhost:8080/api/auth/register</code></pre>
+<p class="spacer"></p>
+<h3>Capture 4 : Base de donn&#233;es MySQL</h3>
+<p class="spacer"></p>
+<p>Montrer la table users, surtout la colonne password_hash.</p>
+<p class="spacer"></p>
+<p>Le r&#233;sultat attendu est que le mot de passe ne soit pas visible en clair.</p>
+<p class="spacer"></p>
+<p>Exemple :</p>
+<p class="spacer"></p>
+<pre class="table-line">| phone | password_hash |</pre>
+<pre class="table-line">|---|---|</pre>
+<pre class="table-line">| 0611111111 | $2a$10$... |</pre>
+<p class="spacer"></p>
+<h3>Capture 5 : Test Postman de connexion</h3>
+<p class="spacer"></p>
+<p>Montrer :</p>
+<p class="spacer"></p>
+<pre><code>POST http://localhost:8080/api/auth/login</code></pre>
+<p class="spacer"></p>
+<p>Avec une connexion r&#233;ussie.</p>
+<p class="spacer"></p>
+<h3>Capture 6 : Mot de passe oubli&#233;</h3>
+<p class="spacer"></p>
+<p>Montrer la requ&#234;te de r&#233;cup&#233;ration :</p>
+<p class="spacer"></p>
+<pre><code>POST /api/auth/forgot-password</code></pre>
+<p class="spacer"></p>
+<p>Puis :</p>
+<p class="spacer"></p>
+<pre><code>POST /api/auth/reset-password</code></pre>
+<p class="spacer"></p>
+<hr />
+<p class="spacer"></p>
+<h2>8. R&#233;sultats attendus</h2>
+<p class="spacer"></p>
+<p>&#192; la fin de l&#39;impl&#233;mentation, le syst&#232;me doit respecter les r&#233;sultats suivants :</p>
+<p class="spacer"></p>
+<p>1. Le mot de passe n&#39;est jamais stock&#233; en clair.</p>
+<p>2. Le champ passwordHash contient uniquement une empreinte BCrypt.</p>
+<p>3. Deux mots de passe identiques peuvent produire deux hashes diff&#233;rents.</p>
+<p>4. La connexion fonctionne avec le mot de passe original.</p>
+<p>5. Un mot de passe incorrect est refus&#233;.</p>
+<p>6. La r&#233;initialisation du mot de passe remplace l&#39;ancien hash par un nouveau.</p>
+<p>7. La base de donn&#233;es reste plus s&#233;curis&#233;e en cas de fuite.</p>
+<p class="spacer"></p>
+<hr />
+<p class="spacer"></p>
+<h2>9. Tests r&#233;alis&#233;s</h2>
+<p class="spacer"></p>
+<h3>9.1 Test d&#39;inscription</h3>
+<p class="spacer"></p>
+<p>Objectif : v&#233;rifier que le backend cr&#233;e un utilisateur avec un mot de passe hach&#233;.</p>
+<p class="spacer"></p>
+<p>&#201;tapes :</p>
+<p class="spacer"></p>
+<p>1. Envoyer une requ&#234;te POST /api/auth/register.</p>
+<p>2. V&#233;rifier la r&#233;ponse JSON.</p>
+<p>3. Ouvrir MySQL.</p>
+<p>4. V&#233;rifier que password_hash ne contient pas le mot de passe en clair.</p>
+<p class="spacer"></p>
+<p>R&#233;sultat attendu :</p>
+<p class="spacer"></p>
+<pre><code>Le compte est cr&#233;&#233; et le mot de passe est hach&#233;.</code></pre>
+<p class="spacer"></p>
+<h3>9.2 Test de connexion correcte</h3>
+<p class="spacer"></p>
+<p>Objectif : v&#233;rifier que l&#39;utilisateur peut se connecter avec son vrai mot de passe.</p>
+<p class="spacer"></p>
+<p>&#201;tapes :</p>
+<p class="spacer"></p>
+<p>1. Envoyer POST /api/auth/login.</p>
+<p>2. Utiliser le t&#233;l&#233;phone et le mot de passe corrects.</p>
+<p>3. V&#233;rifier que le backend retourne les informations de l&#39;utilisateur.</p>
+<p class="spacer"></p>
+<p>R&#233;sultat attendu :</p>
+<p class="spacer"></p>
+<pre><code>Connexion r&#233;ussie.</code></pre>
+<p class="spacer"></p>
+<h3>9.3 Test de connexion incorrecte</h3>
+<p class="spacer"></p>
+<p>Objectif : v&#233;rifier qu&#39;un mauvais mot de passe est refus&#233;.</p>
+<p class="spacer"></p>
+<p>&#201;tapes :</p>
+<p class="spacer"></p>
+<p>1. Envoyer POST /api/auth/login.</p>
+<p>2. Utiliser un mauvais mot de passe.</p>
+<p class="spacer"></p>
+<p>R&#233;sultat attendu :</p>
+<p class="spacer"></p>
+<pre><code>Erreur : Mot de passe incorrect.</code></pre>
+<p class="spacer"></p>
+<h3>9.4 Test de r&#233;initialisation</h3>
+<p class="spacer"></p>
+<p>Objectif : v&#233;rifier que le nouveau mot de passe est aussi hach&#233;.</p>
+<p class="spacer"></p>
+<p>&#201;tapes :</p>
+<p class="spacer"></p>
+<p>1. Appeler /api/auth/forgot-password.</p>
+<p>2. Utiliser l&#39;OTP 1234.</p>
+<p>3. Appeler /api/auth/reset-password.</p>
+<p>4. V&#233;rifier dans MySQL que le hash a chang&#233;.</p>
+<p class="spacer"></p>
+<p>R&#233;sultat attendu :</p>
+<p class="spacer"></p>
+<pre><code>Le mot de passe est modifi&#233; et stock&#233; sous forme hach&#233;e.</code></pre>
+<p class="spacer"></p>
+<hr />
+<p class="spacer"></p>
+<h2>10. Discussion : SHA-256 ou BCrypt ?</h2>
+<p class="spacer"></p>
+<p>SHA-256 est une fonction de hachage importante et fiable pour plusieurs usages. Elle permet d&#39;expliquer le principe du hachage, car elle transforme une donn&#233;e en empreinte fixe.</p>
+<p class="spacer"></p>
+<p>Cependant, dans le cas des mots de passe, SHA-256 seul est trop rapide. Un attaquant peut tester beaucoup de combinaisons rapidement.</p>
+<p class="spacer"></p>
+<p>BCrypt est plus adapt&#233;, car il est volontairement plus lent et utilise un sel. Pour cette raison, POS2 utilise BCrypt dans l&#39;impl&#233;mentation r&#233;elle.</p>
+<p class="spacer"></p>
+<p>Comparaison :</p>
+<p class="spacer"></p>
+<pre class="table-line">| Crit&#232;re | SHA-256 | BCrypt |</pre>
+<pre class="table-line">|---|---|---|</pre>
+<pre class="table-line">| Fonction de hachage | Oui | Oui |</pre>
+<pre class="table-line">| Adapt&#233; aux mots de passe | Moyen seul | Oui |</pre>
+<pre class="table-line">| Sel automatique | Non | Oui |</pre>
+<pre class="table-line">| R&#233;sistance brute force | Faible si utilis&#233; seul | Meilleure |</pre>
+<pre class="table-line">| Utilisation dans POS2 | Explication th&#233;orique | Impl&#233;mentation r&#233;elle |</pre>
+<p class="spacer"></p>
+<hr />
+<p class="spacer"></p>
+<h2>11. Limites du travail</h2>
+<p class="spacer"></p>
+<p>Le module actuel est adapt&#233; pour une d&#233;monstration acad&#233;mique. Cependant, pour une version totalement professionnelle, il faudrait ajouter :</p>
+<p class="spacer"></p>
+<li>politique de mot de passe plus stricte ;</li>
+<li>limitation du nombre de tentatives de connexion ;</li>
+<li>journalisation des connexions suspectes ;</li>
+<li>envoi r&#233;el de l&#39;OTP par SMS ;</li>
+<li>protection compl&#232;te par session ou JWT selon le d&#233;ploiement ;</li>
+<li>configuration s&#233;curis&#233;e des secrets backend.</li>
+<p class="spacer"></p>
+<p>Ces am&#233;liorations peuvent &#234;tre ajout&#233;es dans une prochaine version du projet.</p>
+<p class="spacer"></p>
+<hr />
+<p class="spacer"></p>
+<h2>12. Conclusion</h2>
+<p class="spacer"></p>
+<p>Ce travail a permis d&#39;int&#233;grer un m&#233;canisme de hachage de mots de passe dans le syst&#232;me POS2 Restaurant. Le projet montre l&#39;importance de ne jamais stocker les mots de passe en clair dans une base de donn&#233;es.</p>
+<p class="spacer"></p>
+<p>SHA-256 permet de comprendre le principe du hachage, mais BCrypt est plus adapt&#233; pour les mots de passe r&#233;els. Dans POS2, le backend Spring Boot utilise donc BCryptPasswordEncoder pour hacher les mots de passe lors de l&#39;inscription et lors de la r&#233;initialisation.</p>
+<p class="spacer"></p>
+<p>Gr&#226;ce &#224; ce module, les comptes clients, serveurs et administrateurs sont mieux prot&#233;g&#233;s. Le projet devient ainsi plus r&#233;aliste, plus professionnel et plus proche des exigences d&#39;une application web moderne.</p>
+<p class="spacer"></p>
+<hr />
+<p class="spacer"></p>
+<h2>Annexes</h2>
+<p class="spacer"></p>
+<h3>A. Fichiers principaux du projet</h3>
+<p class="spacer"></p>
+<pre class="table-line">| Fichier | R&#244;le |</pre>
+<pre class="table-line">|---|---|</pre>
+<pre class="table-line">| User.java | Entit&#233; utilisateur |</pre>
+<pre class="table-line">| UserRole.java | R&#244;les utilisateur |</pre>
+<pre class="table-line">| UserRepository.java | Acc&#232;s aux utilisateurs |</pre>
+<pre class="table-line">| AuthController.java | Endpoints d&#39;authentification |</pre>
+<pre class="table-line">| AuthService.java | Logique de hachage et connexion |</pre>
+<pre class="table-line">| PasswordConfig.java | Configuration BCrypt |</pre>
+<pre class="table-line">| RegisterRequest.java | DTO inscription |</pre>
+<pre class="table-line">| LoginRequest.java | DTO connexion |</pre>
+<pre class="table-line">| ResetPasswordRequest.java | DTO r&#233;initialisation |</pre>
+<p class="spacer"></p>
+<h3>B. Exemple de hash BCrypt</h3>
+<p class="spacer"></p>
+<pre><code>$2a$10$Q2Z2nB6RDNm8zI2jq2ZLNeKfSxqf29bEGxP7CkM5C1QjYyLxE1lG.</code></pre>
+<p class="spacer"></p>
+<p>Ce texte ne permet pas de retrouver directement le mot de passe original.</p>
+<p class="spacer"></p>
+</body>
+</html>
