@@ -36,19 +36,52 @@ import {
 const SERVER_AUTH_KEY = 'pos2-server-authenticated';
 const SERVER_AUTH_STORAGE_KEY = 'pos2-server-auth';
 
+function normalizeCatalogText(value) {
+  return String(value || '')
+    .trim()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+}
+
+function getCatalogFallback(item) {
+  const itemId = Number(item.id);
+  const itemName = normalizeCatalogText(item.name);
+  const itemCategory = normalizeCatalogText(item.category);
+  const itemStation = normalizeCatalogText(item.station);
+
+  return (
+    menuProducts.find((product) => Number(product.id) === itemId) ||
+    menuProducts.find((product) => normalizeCatalogText(product.name) === itemName) ||
+    menuProducts.find((product) => {
+      const productName = normalizeCatalogText(product.name);
+      return itemName && (itemName.includes(productName) || productName.includes(itemName));
+    }) ||
+    menuProducts.find((product) => normalizeCatalogText(product.category) === itemCategory) ||
+    menuProducts.find((product) => normalizeCatalogText(product.station) === itemStation) ||
+    menuProducts[0] ||
+    {}
+  );
+}
+
+function getCatalogImage(item, fallback) {
+  const backendImage = String(item.imageUrl || item.image || '').trim();
+  return backendImage || fallback.image || menuProducts[0]?.image || '';
+}
+
 function mapCatalogProduct(item) {
-  const fallback = menuProducts.find((product) => Number(product.id) === Number(item.id)) || {};
+  const fallback = getCatalogFallback(item);
   return {
     ...fallback,
     id: item.id,
-    name: item.name,
-    category: item.category,
-    price: Number(item.price || 0),
-    points: Number(item.points || 0),
-    station: item.station,
-    description: item.description,
+    name: item.name || fallback.name,
+    category: item.category || fallback.category,
+    price: Number(item.price || fallback.price || 0),
+    points: Number(item.points || fallback.points || 0),
+    station: item.station || fallback.station,
+    description: item.description || fallback.description || '',
     details: item.details || fallback.details || '',
-    image: item.imageUrl || fallback.image || '',
+    image: getCatalogImage(item, fallback),
     prepTime: fallback.prepTime || '10 min',
     badge: item.available === false ? 'Indisponible' : fallback.badge || 'Maison',
     available: item.available !== false,
@@ -83,6 +116,22 @@ function formatTicketDate(dateValue) {
     dateStyle: 'short',
     timeStyle: 'short',
   }).format(date);
+}
+
+function getOrderActivityDate(order) {
+  return order?.updatedAt || order?.createdAt || '';
+}
+
+function isSameLocalDay(dateValue, referenceDate = new Date()) {
+  if (!dateValue) return false;
+  const date = new Date(dateValue);
+  if (Number.isNaN(date.getTime())) return false;
+
+  return (
+    date.getFullYear() === referenceDate.getFullYear() &&
+    date.getMonth() === referenceDate.getMonth() &&
+    date.getDate() === referenceDate.getDate()
+  );
 }
 
 function createEmptyServerOrder() {
@@ -144,6 +193,18 @@ function getKitchenIncidentLabel(order) {
   if (count === 0) return '';
   if (count === 1) return '1 article signale par la cuisine';
   return `${count} articles signales par la cuisine`;
+}
+
+function getOrderCancellationReason(order) {
+  const serverComment = String(order?.serverComment || '').trim();
+  if (serverComment) return serverComment;
+
+  const incidentReason = getKitchenIncidentItems(order).find((item) => item.cancellationReason)?.cancellationReason;
+  return incidentReason || '';
+}
+
+function isKitchenCancelledOrder(order) {
+  return isCancelledOrder(order) && getOrderCancellationReason(order).toLowerCase().includes('cuisine');
 }
 
 function isReadyForPickup(order) {
@@ -259,8 +320,18 @@ function getReadySinceLabel(dateValue, nowTick) {
   const diffMinutes = getReadySinceMinutes(dateValue, nowTick);
 
   if (diffMinutes <= 0) return 'Prete maintenant';
-  if (diffMinutes === 1) return 'Prete depuis 1 min';
-  return `Prete depuis ${diffMinutes} min`;
+  if (diffMinutes < 60) {
+    return diffMinutes === 1 ? 'Prete depuis 1 min' : `Prete depuis ${diffMinutes} min`;
+  }
+
+  const hours = Math.floor(diffMinutes / 60);
+  const minutes = diffMinutes % 60;
+
+  if (hours < 24) {
+    return minutes > 0 ? `Prete depuis ${hours} h ${minutes} min` : `Prete depuis ${hours} h`;
+  }
+
+  return 'Prete depuis +24 h';
 }
 
 function getReadySinceMinutes(dateValue, nowTick) {
@@ -327,6 +398,8 @@ function ServerPage() {
   const [historySearchType, setHistorySearchType] = useState('table');
   const [historySearch, setHistorySearch] = useState('');
   const [paymentMethods, setPaymentMethods] = useState({});
+  const [cancelDialog, setCancelDialog] = useState(null);
+  const [cancelReason, setCancelReason] = useState('');
   const [activeServerCategory, setActiveServerCategory] = useState('Tous');
   const [menuCatalog, setMenuCatalog] = useState(() =>
     menuProducts.map((product) => ({
@@ -532,6 +605,7 @@ function ServerPage() {
   );
 
   const pickupOrders = useMemo(() => visibleOrders.filter((order) => isReadyForPickup(order)), [visibleOrders]);
+  const kitchenCancelledOrders = useMemo(() => visibleOrders.filter(isKitchenCancelledOrder), [visibleOrders]);
 
   const servedOrders = useMemo(() => visibleOrders.filter(isServedOrder), [visibleOrders]);
   const paidOrders = useMemo(() => visibleOrders.filter(isPaidOrder), [visibleOrders]);
@@ -603,27 +677,36 @@ function ServerPage() {
     () => paymentOrdersWithBillInfo.filter(({ billRequest }) => Boolean(billRequest)).length,
     [paymentOrdersWithBillInfo],
   );
-
+  const cashablePaymentOrders = useMemo(
+    () => paymentOrdersWithBillInfo.filter(({ order }) => isServedOrder(order)),
+    [paymentOrdersWithBillInfo],
+  );
   const activeServiceOrders = useMemo(
-    () => [...pendingOrders, ...confirmedOrders, ...pickupOrders],
-    [confirmedOrders, pendingOrders, pickupOrders],
+    () => [...pendingOrders, ...confirmedOrders, ...pickupOrders, ...kitchenCancelledOrders],
+    [confirmedOrders, kitchenCancelledOrders, pendingOrders, pickupOrders],
   );
   const orderStatusColumns = useMemo(
     () => [
       {
         id: 'validate',
         title: 'A valider',
-        description: 'Verifier a la table avant envoi.',
+        description: 'Commandes en attente de validation.',
         orders: pendingOrders,
       },
       {
         id: 'kitchen',
         title: 'En cuisine',
         description: 'Commandes confirmees en preparation.',
-        orders: confirmedOrders,
+        orders: [...kitchenCancelledOrders, ...confirmedOrders],
+      },
+      {
+        id: 'pickup',
+        title: 'Prets a servir',
+        description: 'Commandes pretes a etre servies.',
+        orders: pickupOrders,
       },
     ],
-    [confirmedOrders, pendingOrders],
+    [confirmedOrders, kitchenCancelledOrders, pendingOrders, pickupOrders],
   );
   const serverCategories = useMemo(
     () => ['Tous', ...new Set(menuCatalog.map((product) => product.category))],
@@ -831,8 +914,8 @@ function ServerPage() {
   }, [paymentOrders]);
 
   const orderQueueSelectableOrders = useMemo(
-    () => [...pendingOrders, ...confirmedOrders],
-    [confirmedOrders, pendingOrders],
+    () => [...pendingOrders, ...confirmedOrders, ...pickupOrders],
+    [confirmedOrders, pendingOrders, pickupOrders],
   );
 
   const selectableOrders = useMemo(() => {
@@ -855,7 +938,7 @@ function ServerPage() {
     : null;
   const selectedBillRequest = findBillRequestForOrder(selectedOrder);
   const showSelectedOrderPanel =
-    activeServerView === 'orders' || activeServerView === 'ready';
+    Boolean(selectedOrder) && (activeServerView === 'orders' || activeServerView === 'ready');
 
   useEffect(() => {
     if (
@@ -1015,27 +1098,58 @@ function ServerPage() {
     setOrders(nextOrders);
   };
 
-  const cancelOrder = async (orderId) => {
+  const openCancelDialog = (order) => {
+    setCancelReason('');
+    setServerActionError('');
+    setCancelDialog(order);
+  };
+
+  const closeCancelDialog = () => {
+    setCancelDialog(null);
+    setCancelReason('');
+  };
+
+  const cancelOrder = async (orderId, reasonValue = '') => {
     const order = orders.find((item) => item.id === orderId);
+    const cancellationReason = reasonValue.trim();
+
+    if (!cancellationReason) {
+      setServerActionError("Annulation bloquee: le motif est obligatoire.");
+      return false;
+    }
+
     setServerActionError('');
 
     if (order && isBackendOrder(order)) {
       try {
         replaceOrderInState(
-          await updateApiOrderStatus(order, 'Annulee par le serveur', serverComments[orderId] || ''),
+          await updateApiOrderStatus(order, 'Annulee par le serveur', cancellationReason),
         );
-        return;
+        return true;
       } catch (error) {
         setServerActionError(error.message || "Impossible d'annuler: backend indisponible.");
-        return;
+        return false;
       }
     }
 
     const nextOrders = updateStoredOrder(orderId, {
       status: 'Annulee par le serveur',
-      serverComment: serverComments[orderId] || '',
+      serverComment: cancellationReason,
     });
     setOrders(nextOrders);
+    return true;
+  };
+
+  const submitCancelDialog = async () => {
+    if (!cancelDialog) return;
+    const reason = cancelReason.trim();
+    if (!reason) {
+      setServerActionError('Saisir motif avant de refuser la commande.');
+      return;
+    }
+
+    const cancelled = await cancelOrder(cancelDialog.id, reason);
+    if (cancelled) closeCancelDialog();
   };
 
   const serveOrder = async (orderId) => {
@@ -1306,11 +1420,6 @@ function ServerPage() {
     }
   };
 
-  const useDemoAccount = () => {
-    setCredentials({ phone: '0600000000', password: '1234' });
-    setServerAuthError('');
-  };
-
   const recoverServerPassword = async () => {
     if (!credentials.phone) {
       setServerAuthError('Entrez le telephone du serveur.');
@@ -1433,7 +1542,6 @@ function ServerPage() {
               L'interface serveur est reservee au personnel. Connectez-vous avec telephone et mot
               de passe.
             </p>
-            <p className="server-demo-hint">Compte demo : 0600000000 / 1234</p>
           </div>
 
           <form className="server-login-form" onSubmit={loginServer}>
@@ -1474,9 +1582,6 @@ function ServerPage() {
                   }}
                 >
                   Mot de passe oublie ?
-                </button>
-                <button className="secondary-link demo-login-button" type="button" onClick={useDemoAccount}>
-                  Utiliser compte demo
                 </button>
               </>
             )}
@@ -1793,13 +1898,13 @@ function ServerPage() {
                     </div>
                     <div className="server-filter-pills server-kpi-pills">
                       <span>
-                        Actives <strong>{activeServiceOrders.length}</strong>
-                      </span>
-                      <span>
                         A valider <strong>{pendingOrders.length}</strong>
                       </span>
                       <span>
                         En cuisine <strong>{confirmedOrders.length}</strong>
+                      </span>
+                      <span>
+                        Prets <strong>{pickupOrders.length}</strong>
                       </span>
                     </div>
                   </div>
@@ -1839,12 +1944,13 @@ function ServerPage() {
                                     ? getReadyTone(getReadySinceMinutes(order.readySince, nowTick))
                                     : ''
                                 }
+                                compactPickup={column.id === 'pickup'}
                                 selected={selectedOrder?.id === order.id}
                                 primaryDisabled={isPrimaryActionDisabled(order)}
                                 onPrimary={() => runPrimaryOrderAction(order)}
-                              onReject={() => cancelOrder(order.id)}
-                              onSelect={() => setSelectedOrderId(order.id)}
-                            />
+                                onReject={() => openCancelDialog(order)}
+                                onSelect={() => setSelectedOrderId(order.id)}
+                              />
                           ))}
                         </div>
                       </section>
@@ -1889,7 +1995,7 @@ function ServerPage() {
                             selected={selectedOrder?.id === order.id}
                             primaryDisabled={isPrimaryActionDisabled(order)}
                             onPrimary={() => runPrimaryOrderAction(order)}
-                            onReject={() => cancelOrder(order.id)}
+                            onReject={() => openCancelDialog(order)}
                             onSelect={() => setSelectedOrderId(order.id)}
                           />
                         ))}
@@ -1904,14 +2010,11 @@ function ServerPage() {
                   <div className="server-section-title">
                     <div>
                       <h1>Paiement / Additions</h1>
-                      <p>Demandes d'addition recues en temps reel et commandes a encaisser.</p>
+                      <p>Commandes a encaisser, avec indication quand le client demande l'addition.</p>
                     </div>
                     <div className="server-filter-pills server-kpi-pills">
                       <span>
-                        Demandes <strong>{paymentOrdersWithBillRequestCount}</strong>
-                      </span>
-                      <span>
-                        A encaisser <strong>{paymentOrders.length}</strong>
+                        A encaisser <strong>{paymentOrdersWithBillInfo.length}</strong>
                       </span>
                       <span>
                         Payees <strong>{paidOrders.length}</strong>
@@ -1919,144 +2022,180 @@ function ServerPage() {
                     </div>
                   </div>
 
-                  <div className="server-bill-request-grid">
-                    {paymentOrders.length === 0 && (
-                      <div className="server-empty-state-card">
-                        <span aria-hidden="true">MAD</span>
-                        <h2>Aucune commande a encaisser</h2>
-                        <p>Les commandes confirmees ou servies apparaitront ici.</p>
-                      </div>
-                    )}
-                    {paymentOrdersWithBillInfo.map(({ order, billRequest }) => {
-                      const orderCanBePaid = isServedOrder(order);
-                      const orderWaitsValidation = isPendingValidationOrder(order);
-                      const selectedPaymentMethod = paymentMethods[order.id] || 'Especes';
-                      const actionLabel = orderCanBePaid
-                        ? 'Encaisser'
-                        : orderWaitsValidation
-                          ? 'En attente serveur'
-                          : 'Marquer servie';
+                  <div className="server-billing-layout">
+                    <div className="server-billing-main">
+                      {paymentOrders.length === 0 && (
+                        <div className="server-empty-state-card">
+                          <span aria-hidden="true">MAD</span>
+                          <h2>Aucune commande a encaisser</h2>
+                          <p>Les commandes confirmees ou servies apparaitront ici.</p>
+                        </div>
+                      )}
+                      {paymentOrders.length > 0 && (
+                        <section className="server-billing-panel server-cashier-panel">
+                          <header className="server-billing-panel-header">
+                            <div>
+                              <h2>A encaisser</h2>
+                              <p>Commandes pretes a etre encaissees.</p>
+                            </div>
+                            <button
+                              className="server-refresh-button"
+                              type="button"
+                              onClick={refreshOrdersAndTablesSilently}
+                            >
+                              Actualiser la liste
+                            </button>
+                          </header>
+                          <div className="server-bill-request-grid server-cashier-grid">
+                            {paymentOrdersWithBillInfo.length === 0 && (
+                              <div className="server-inline-empty-card">
+                                Aucune commande prete a encaisser.
+                              </div>
+                            )}
+                            {paymentOrdersWithBillInfo.map(({ order, billRequest }) => {
+                              const orderCanBePaid = isServedOrder(order);
+                              const orderWaitsValidation = isPendingValidationOrder(order);
+                              const selectedPaymentMethod = paymentMethods[order.id] || 'Especes';
+                              const actionLabel = orderCanBePaid
+                                ? 'Encaisser'
+                                : orderWaitsValidation
+                                  ? 'En attente serveur'
+                                  : 'Marquer servie';
 
-                      return (
-                      <article
-                        className={`server-bill-request-card ${
-                          selectedOrder?.id === order.id ? 'is-selected' : ''
-                        }`}
-                        key={`payment-${order.id}`}
-                        onClick={() => setSelectedOrderId(order.id)}
-                      >
-                        <div className="server-bill-request-top">
-                          <div>
-                            <span>Table</span>
-                            <strong>{order.table}</strong>
-                          </div>
-                          <span
-                            className={`status-badge ${
-                              billRequest ? 'status-paid' : 'status-payment'
-                            }`}
-                          >
-                            {billRequest
-                              ? "Client demande l'addition"
-                              : orderCanBePaid
-                                ? 'A encaisser'
-                                : 'Commande confirmee'}
-                          </span>
-                        </div>
-                        <p>{order.id}</p>
-                        <ul>
-                          {order.items.slice(0, 3).map((item) => (
-                            <li key={`served-${order.id}-${item.id}-${item.name}`}>
-                              <span>
-                                {item.quantity}x {item.name}
-                                {isRewardFreeItem(item) ? ' - Gratuit' : ''}
-                              </span>
-                              <strong>{isRewardFreeItem(item) ? '0 MAD' : formatPrice(item.price * item.quantity)}</strong>
-                            </li>
-                          ))}
-                          {order.items.length > 3 && (
-                            <li>
-                              <span>+{order.items.length - 3} autre(s)</span>
-                              <strong />
-                            </li>
-                          )}
-                        </ul>
-                        {order.rewardNote && <p className="server-reward-note">{order.rewardNote}</p>}
-                        {getOrderDiscountAmount(order) > 0 && (
-                          <div className="server-card-total-line server-card-total-subline">
-                            <span>Sous-total</span>
-                            <strong>{formatPrice(getOrderSubtotal(order))}</strong>
-                          </div>
-                        )}
-                        {getOrderDiscountAmount(order) > 0 && (
-                          <div className="server-card-total-line server-card-total-discount">
-                            <span>Reduction</span>
-                            <strong>-{formatPrice(getOrderDiscountAmount(order))}</strong>
-                          </div>
-                        )}
-                        <div className="server-card-total-line">
-                          <span>Total final</span>
-                          <strong>{formatPrice(order.total)}</strong>
-                        </div>
-                        {orderCanBePaid && (
-                          <div className="server-payment-method-choice server-card-payment-methods">
-                            {['Especes', 'Carte', 'Digital'].map((method) => (
-                              <button
-                                className={selectedPaymentMethod === method ? 'is-active' : ''}
-                                key={`${order.id}-${method}`}
-                                type="button"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  setPaymentMethods((current) => ({
-                                    ...current,
-                                    [order.id]: method,
-                                  }));
-                                }}
-                              >
-                                {method}
-                              </button>
-                            ))}
-                          </div>
-                        )}
-                        <button
-                          className="btn btn-primary"
-                          disabled={
-                            orderWaitsValidation ||
-                            (orderCanBePaid &&
-                              (!selectedPaymentMethod ||
-                                !order.items?.length ||
-                                Number(order.total || 0) <= 0))
-                          }
-                          type="button"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            if (orderWaitsValidation) return;
-                            if (orderCanBePaid) {
-                              runPrimaryOrderAction(order);
-                              return;
-                            }
-                            serveOrder(order.id);
-                          }}
+                              return (
+                        <article
+                          className={`server-bill-request-card server-cashier-card ${
+                            selectedOrder?.id === order.id ? 'is-selected' : ''
+                          }`}
+                          key={`payment-cashier-${order.id}`}
+                          onClick={() => setSelectedOrderId(order.id)}
                         >
-                          {actionLabel}
-                        </button>
-                        {orderCanBePaid && isPrimaryActionDisabled(order) && (
-                          <small className="server-disabled-help">
-                            Choisissez un mode de paiement pour encaisser.
-                          </small>
-                        )}
-                        {orderWaitsValidation && (
-                          <small className="server-disabled-help">
-                            Le serveur doit d'abord valider cette commande.
-                          </small>
-                        )}
-                        {!orderCanBePaid && !orderWaitsValidation && (
-                          <small className="server-disabled-help">
-                            Commande active. Marquez-la servie pour passer a l'encaissement.
-                          </small>
-                        )}
-                      </article>
-                      );
-                    })}
+                          <div className="server-bill-request-top">
+                            <div>
+                              <span>Table</span>
+                              <strong>{order.table}</strong>
+                            </div>
+                            <span
+                              className={`status-badge ${
+                                billRequest ? 'status-paid' : 'status-payment'
+                              }`}
+                            >
+                              {billRequest
+                                ? "Client demande l'addition"
+                                : orderCanBePaid
+                                  ? 'A encaisser'
+                                  : 'Commande confirmee'}
+                            </span>
+                          </div>
+                          <p>{order.id}</p>
+                          {billRequest && (
+                            <div className="server-bill-request-comment">
+                              Client demande addition
+                            </div>
+                          )}
+                          <ul>
+                            {order.items.slice(0, 3).map((item) => (
+                              <li key={`served-${order.id}-${item.id}-${item.name}`}>
+                                <span>
+                                  {item.quantity}x {item.name}
+                                  {isRewardFreeItem(item) ? ' - Gratuit' : ''}
+                                </span>
+                                <strong>{isRewardFreeItem(item) ? '0 MAD' : formatPrice(item.price * item.quantity)}</strong>
+                              </li>
+                            ))}
+                            {order.items.length > 3 && (
+                              <li>
+                                <span>+{order.items.length - 3} autre(s)</span>
+                                <strong />
+                              </li>
+                            )}
+                          </ul>
+                          {order.rewardNote && <p className="server-reward-note">{order.rewardNote}</p>}
+                          {getOrderDiscountAmount(order) > 0 && (
+                            <div className="server-card-total-line server-card-total-subline">
+                              <span>Sous-total</span>
+                              <strong>{formatPrice(getOrderSubtotal(order))}</strong>
+                            </div>
+                          )}
+                          {getOrderDiscountAmount(order) > 0 && (
+                            <div className="server-card-total-line server-card-total-discount">
+                              <span>Reduction</span>
+                              <strong>-{formatPrice(getOrderDiscountAmount(order))}</strong>
+                            </div>
+                          )}
+                          <div className="server-card-total-line">
+                            <span>Total final</span>
+                            <strong>{formatPrice(order.total)}</strong>
+                          </div>
+                          {orderCanBePaid && (
+                            <div className="server-payment-method-choice server-card-payment-methods">
+                              {['Especes', 'Carte', 'Digital'].map((method) => (
+                                <button
+                                  className={selectedPaymentMethod === method ? 'is-active' : ''}
+                                  key={`${order.id}-${method}`}
+                                  type="button"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    setPaymentMethods((current) => ({
+                                      ...current,
+                                      [order.id]: method,
+                                    }));
+                                  }}
+                                >
+                                  {method}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                          <button
+                            className="btn btn-primary"
+                            disabled={
+                              orderWaitsValidation ||
+                              (orderCanBePaid &&
+                                (!selectedPaymentMethod ||
+                                  !order.items?.length ||
+                                  Number(order.total || 0) <= 0))
+                            }
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              if (orderWaitsValidation) return;
+                              if (orderCanBePaid) {
+                                runPrimaryOrderAction(order);
+                                return;
+                              }
+                              serveOrder(order.id);
+                            }}
+                          >
+                            {actionLabel}
+                          </button>
+                          {orderCanBePaid && isPrimaryActionDisabled(order) && (
+                            <small className="server-disabled-help">
+                              Choisissez un mode de paiement pour encaisser.
+                            </small>
+                          )}
+                          {orderWaitsValidation && (
+                            <small className="server-disabled-help">
+                              Le serveur doit d'abord valider cette commande.
+                            </small>
+                          )}
+                          {!orderCanBePaid && !orderWaitsValidation && (
+                            <small className="server-disabled-help">
+                              Commande active. Marquez-la servie pour passer a l'encaissement.
+                            </small>
+                          )}
+                        </article>
+                        );
+                      })}
+                          </div>
+                        </section>
+                      )}
+                    </div>
+                    <BillingDaySummary
+                      billRequestCount={paymentOrdersWithBillRequestCount}
+                      pendingPaymentCount={paymentOrdersWithBillInfo.length}
+                      paidOrders={paidOrders}
+                    />
                   </div>
                 </section>
               )}
@@ -2065,8 +2204,8 @@ function ServerPage() {
                 <section className="server-dashboard-section server-menu-section" id="manual-order">
                   <div className="server-section-title">
                     <div>
-                      <h2>Menu serveur</h2>
-                      <p>Commande prise par le serveur pour un client accompagne.</p>
+                      <h2>Nouvelle commande</h2>
+                      <p>Creez une nouvelle commande pour un client.</p>
                     </div>
                   </div>
 
@@ -2139,7 +2278,7 @@ function ServerPage() {
                         >
                           <div
                             className="server-food-image"
-                            style={{ backgroundImage: `url(${product.image})` }}
+                            style={{ backgroundImage: product.image ? `url("${product.image}")` : undefined }}
                           />
                           <div className="server-food-body">
                             <small>{product.category}</small>
@@ -2207,7 +2346,7 @@ function ServerPage() {
                 <section className="server-dashboard-section" id="history">
                   <div className="server-section-title">
                     <div>
-                      <h2>Historique rapide</h2>
+                      <h2>Historique</h2>
                       <p>Commandes confirmees, annulees ou payees pendant le service.</p>
                     </div>
                   </div>
@@ -2280,8 +2419,8 @@ function ServerPage() {
                   onEditItem={editPendingOrderItem}
                   onPrimary={() => runPrimaryOrderAction(selectedOrder)}
                   onAddReplacement={() => openReplacementOrder(selectedOrder)}
-                  onCancelOrder={() => selectedOrder && cancelOrder(selectedOrder.id)}
-                  onReject={() => selectedOrder && cancelOrder(selectedOrder.id)}
+                  onCancelOrder={() => selectedOrder && openCancelDialog(selectedOrder)}
+                  onReject={() => selectedOrder && openCancelDialog(selectedOrder)}
                   onPaymentMethodChange={(orderId, method) =>
                     setPaymentMethods((current) => ({
                       ...current,
@@ -2302,6 +2441,17 @@ function ServerPage() {
           </div>
         </section>
       </div>
+
+      {cancelDialog && (
+        <ServerCancelDialog
+          error={serverActionError}
+          onClose={closeCancelDialog}
+          onReasonChange={setCancelReason}
+          onSubmit={submitCancelDialog}
+          order={cancelDialog}
+          reason={cancelReason}
+        />
+      )}
 
       {activeTicket && (
         <section className="print-ticket" aria-label="Ticket addition">
@@ -2373,6 +2523,109 @@ function ServerPage() {
   );
 }
 
+function BillingDaySummary({ billRequestCount, pendingPaymentCount, paidOrders }) {
+  const todayPaidOrders = paidOrders.filter((order) => isSameLocalDay(getOrderActivityDate(order)));
+  const paidCount = todayPaidOrders.length;
+  const totalPaid = todayPaidOrders.reduce((sum, order) => sum + Number(order.total || 0), 0);
+
+  return (
+    <aside className="server-billing-summary-card" aria-label="Apercu du jour">
+      <header>
+        <div>
+          <span className="server-summary-eyebrow">Apercu du jour</span>
+          <h2>Paiement</h2>
+        </div>
+        <span className="server-summary-live-dot" aria-hidden="true" />
+      </header>
+
+      <div className="server-summary-stat-list">
+        <div className="server-summary-stat">
+          <span className="server-summary-icon server-summary-icon-blue" aria-hidden="true">+</span>
+          <div>
+            <small>Demandes d'addition</small>
+            <strong>{billRequestCount}</strong>
+          </div>
+        </div>
+        <div className="server-summary-stat">
+          <span className="server-summary-icon server-summary-icon-green" aria-hidden="true">MAD</span>
+          <div>
+            <small>A encaisser</small>
+            <strong>{pendingPaymentCount}</strong>
+          </div>
+        </div>
+        <div className="server-summary-stat">
+          <span className="server-summary-icon server-summary-icon-teal" aria-hidden="true">OK</span>
+          <div>
+            <small>Payees aujourd'hui</small>
+            <strong>{paidCount}</strong>
+          </div>
+        </div>
+      </div>
+
+      <section className="server-summary-total">
+        <span>Total encaisse</span>
+        <strong>{formatPrice(totalPaid)}</strong>
+        <small>Aujourd'hui</small>
+      </section>
+
+      <section className="server-summary-tip">
+        <div className="server-summary-wallet" aria-hidden="true">
+          <span />
+        </div>
+        <strong>Encaissement rapide</strong>
+        <p>Selectionnez une commande, choisissez le mode de paiement, puis encaissez en un geste.</p>
+      </section>
+    </aside>
+  );
+}
+
+function ServerCancelDialog({ error, onClose, onReasonChange, onSubmit, order, reason }) {
+  const suggestions = ['Client absent', 'Erreur de commande', 'Produit indisponible', 'Demande client'];
+
+  return (
+    <div className="server-modal-backdrop" role="presentation">
+      <section aria-modal="true" className="server-cancel-modal" role="dialog">
+        <header>
+          <span>Refus commande</span>
+          <h2>Saisir motif</h2>
+          <p>
+            Table {order.table} - {order.id}. Le motif sera visible dans le dashboard admin.
+          </p>
+        </header>
+
+        <div className="server-cancel-suggestions">
+          {suggestions.map((suggestion) => (
+            <button key={suggestion} onClick={() => onReasonChange(suggestion)} type="button">
+              {suggestion}
+            </button>
+          ))}
+        </div>
+
+        <label>
+          Motif obligatoire
+          <textarea
+            autoFocus
+            onChange={(event) => onReasonChange(event.target.value)}
+            placeholder="Ex: le client a change d'avis, doublon, produit indisponible..."
+            value={reason}
+          />
+        </label>
+
+        {error ? <p className="server-cancel-modal-error">{error}</p> : null}
+
+        <footer>
+          <button className="btn btn-secondary" onClick={onClose} type="button">
+            Fermer
+          </button>
+          <button className="btn btn-danger" disabled={!reason.trim()} onClick={onSubmit} type="button">
+            Refuser commande
+          </button>
+        </footer>
+      </section>
+    </div>
+  );
+}
+
 function ServerOrderCard({
   order,
   slotInfo,
@@ -2383,19 +2636,24 @@ function ServerOrderCard({
   onPrimary,
   onReject,
   onSelect,
+  compactPickup = false,
 }) {
   const stage = getOrderStage(order);
-  const visibleItems = order.items.slice(0, 3);
+  const visibleItems = order.items.slice(0, compactPickup ? 2 : 3);
   const discountAmount = getOrderDiscountAmount(order);
   const slotAccent = slotInfo ? normalizeSlotAccent(slotInfo.color) : '#5f6f6a';
   const slotLabel = slotInfo?.colorName || slotInfo?.color || 'Slot attribue';
   const incidentItems = getKitchenIncidentItems(order);
+  const kitchenCancelled = isKitchenCancelledOrder(order);
+  const cancellationReason = getOrderCancellationReason(order);
+
+  const isCompactPickupCard = stage === 'pickup' && compactPickup;
 
   return (
     <article
       className={`server-compact-order-card status-card-${stage} ${
         stage === 'pickup' ? 'server-ready-pickup-card' : ''
-      } ${
+      } ${isCompactPickupCard ? 'server-ready-pickup-card-compact' : ''} ${
         selected ? 'is-selected' : ''
       }`}
       style={{ '--slot-accent': slotAccent }}
@@ -2413,16 +2671,22 @@ function ServerOrderCard({
         <span className={`status-badge status-${stage}`}>{getStatusLabel(order.status)}</span>
       </header>
 
-        <p className="server-order-id">{order.id}</p>
+      <p className="server-order-id">{order.id}</p>
 
-        {incidentItems.length > 0 && (
-          <div className="server-order-incident-alert">
-            <strong>Incident cuisine</strong>
-            <span>{getKitchenIncidentLabel(order)} - client a consulter</span>
-          </div>
-        )}
+      {kitchenCancelled ? (
+        <div className="server-order-incident-alert server-order-cancel-alert">
+          <strong>{order.id} annulee par la cuisine</strong>
+          <span>{cancellationReason || 'Motif non precise'}</span>
+        </div>
+      ) : incidentItems.length > 0 && (
+        <div className="server-order-incident-alert">
+          <strong>Incident cuisine</strong>
+          <span>{getKitchenIncidentLabel(order)} - client a consulter</span>
+        </div>
+      )}
 
-        {stage === 'pickup' ? (
+      {stage === 'pickup' && !isCompactPickupCard ? (
+        <>
           <div className="server-ready-meta">
             <div className="server-ready-slot" style={{ '--slot-accent': slotAccent }}>
               <span>Table a servir</span>
@@ -2436,44 +2700,68 @@ function ServerOrderCard({
               <strong>{slotLabel}</strong>
             </div>
           </div>
-        ) : null}
 
-        {stage === 'pickup' ? (
           <p className={`server-ready-timer server-ready-timer-${readySinceTone || 'fresh'}`}>
             {readySinceLabel}
           </p>
-        ) : null}
+        </>
+      ) : null}
 
-        <ul className="server-compact-items">
+      {isCompactPickupCard ? (
+        <div className="server-ready-inline-summary">
+          <div className="server-ready-inline-slot" style={{ '--slot-accent': slotAccent }}>
+            <span>{slotInfo ? `Slot ${slotInfo.number}` : 'Slot'}</span>
+            <strong>{slotLabel}</strong>
+          </div>
+          <p className={`server-ready-timer server-ready-timer-${readySinceTone || 'fresh'}`}>
+            {readySinceLabel}
+          </p>
+        </div>
+      ) : null}
+
+      <ul className="server-compact-items">
         {visibleItems.map((item, index) => {
           const itemHasIncident = isKitchenIncidentItem(item);
 
           return (
-          <li className={itemHasIncident ? 'server-line-cancelled' : ''} key={`${order.id}-${item.id}-${index}`}>
-            <span className="server-order-line-text">
-              {itemHasIncident ? <span className="server-incident-line-icon" aria-hidden="true">!</span> : null}
-              <span>
-                {item.quantity}x {item.name}
-                {isRewardFreeItem(item) ? ' - Gratuit' : ''}
-                {itemHasIncident ? ` - Annule (${item.cancellationReason || 'motif cuisine'})` : ''}
+            <li
+              className={itemHasIncident ? 'server-line-cancelled' : ''}
+              key={`${order.id}-${item.id}-${index}`}
+            >
+              <span className="server-order-line-text">
+                {itemHasIncident ? (
+                  <span className="server-incident-line-icon" aria-hidden="true">
+                    !
+                  </span>
+                ) : null}
+                <span>
+                  {item.quantity}x {item.name}
+                  {isRewardFreeItem(item) ? ' - Gratuit' : ''}
+                  {itemHasIncident
+                    ? ` - Annule (${item.cancellationReason || 'motif cuisine'})`
+                    : ''}
+                </span>
               </span>
-            </span>
-          </li>
+            </li>
           );
         })}
+
         {order.items.length > visibleItems.length && (
           <li>
             <span>+{order.items.length - visibleItems.length} autre(s)</span>
           </li>
         )}
       </ul>
+
       {order.rewardNote && <p className="server-reward-note">{order.rewardNote}</p>}
+
       {discountAmount > 0 && (
         <div className="server-card-total-line server-card-total-subline">
           <span>Sous-total</span>
           <strong>{formatPrice(getOrderSubtotal(order))}</strong>
         </div>
       )}
+
       {discountAmount > 0 && (
         <div className="server-card-total-line server-card-total-discount">
           <span>Reduction</span>
@@ -2505,6 +2793,7 @@ function ServerOrderCard({
             {stage === 'pickup' ? 'Servir la table' : getPrimaryActionLabel(order)}
           </button>
         )}
+
         {stage === 'validate' && (
           <button
             className="btn btn-danger"

@@ -223,6 +223,60 @@ function normalizeSlotColor(color) {
   return slotColorFallbacks[value.toLowerCase()] || '#5f6f6a';
 }
 
+function parseAssignedTableNumbers(assignedTables) {
+  return String(assignedTables || '')
+    .split(',')
+    .map((tableNumber) => tableNumber.trim())
+    .filter(Boolean);
+}
+
+function getOrderActivityDate(order) {
+  return order?.updatedAt || order?.createdAt || '';
+}
+
+function isSameLocalDay(dateValue, referenceDate = new Date()) {
+  if (!dateValue) return false;
+  const date = new Date(dateValue);
+  if (Number.isNaN(date.getTime())) return false;
+
+  return (
+    date.getFullYear() === referenceDate.getFullYear() &&
+    date.getMonth() === referenceDate.getMonth() &&
+    date.getDate() === referenceDate.getDate()
+  );
+}
+
+function isSameLocalMonth(dateValue, referenceDate = new Date()) {
+  if (!dateValue) return false;
+  const date = new Date(dateValue);
+  if (Number.isNaN(date.getTime())) return false;
+
+  return date.getFullYear() === referenceDate.getFullYear() && date.getMonth() === referenceDate.getMonth();
+}
+
+function getStaffPaidOrders(member, paidOrders) {
+  const assignedTables = parseAssignedTableNumbers(member.assignedTables);
+  const isWaiter = member.role === 'WAITER';
+
+  if (!isWaiter) return [];
+  if (assignedTables.length === 0) return paidOrders;
+
+  return paidOrders.filter((order) => assignedTables.includes(String(order.table)));
+}
+
+function getStaffRevenueStats(member, paidOrders) {
+  const memberPaidOrders = getStaffPaidOrders(member, paidOrders);
+  const todayOrders = memberPaidOrders.filter((order) => isSameLocalDay(getOrderActivityDate(order)));
+  const monthOrders = memberPaidOrders.filter((order) => isSameLocalMonth(getOrderActivityDate(order)));
+
+  return {
+    todayTotal: todayOrders.reduce((sum, order) => sum + Number(order.total || 0), 0),
+    monthTotal: monthOrders.reduce((sum, order) => sum + Number(order.total || 0), 0),
+    todayCount: todayOrders.length,
+    monthCount: monthOrders.length,
+  };
+}
+
 function getStoredAdminAuth() {
   const rawAuth = sessionStorage.getItem(ADMIN_AUTH_STORAGE_KEY);
   if (!rawAuth) {
@@ -269,6 +323,53 @@ function orderStatusLabel(status) {
   return labels[status] || status;
 }
 
+function isCancelledAdminOrder(order) {
+  const status = String(order?.status || '')
+    .trim()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+
+  return status.includes('annule') || status === 'cancelled';
+}
+
+function getAdminCancellationReason(order) {
+  const serverComment = String(order?.serverComment || '').trim();
+  if (serverComment) return serverComment;
+
+  const itemReason = (order?.items || []).find((item) => item.cancellationReason)?.cancellationReason;
+  return itemReason || 'Motif non precise';
+}
+
+function getCancellationSource(order) {
+  const reason = getAdminCancellationReason(order).toLowerCase();
+  if (reason.includes('cuisine')) return 'Cuisine';
+  if (String(order?.status || '').toLowerCase().includes('serveur')) return 'Serveur';
+  return 'Service';
+}
+
+function getCorrectionSearchText(order) {
+  return [
+    order?.id,
+    order?.backendId,
+    order?.table ? `table ${order.table}` : '',
+    order?.status,
+    order?.total,
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+}
+
+function getCorrectionStatusTone(status) {
+  const normalizedStatus = String(status || '').toLowerCase();
+  if (normalizedStatus.includes('payee')) return 'success';
+  if (normalizedStatus.includes('servie')) return 'served';
+  if (normalizedStatus.includes('prete')) return 'ready';
+  if (normalizedStatus.includes('cuisine') || normalizedStatus.includes('confirmee')) return 'warning';
+  return 'muted';
+}
+
 function tableStatusLabel(status) {
   const labels = {
     AVAILABLE: 'Libre',
@@ -308,7 +409,10 @@ function AdminPage() {
   const [slotDraft, setSlotDraft] = useState(emptySlotDraft);
   const [exportDraft, setExportDraft] = useState({ date: '', orderId: '' });
   const [selectedExportOrderIds, setSelectedExportOrderIds] = useState([]);
+  const [exportDialogOpen, setExportDialogOpen] = useState(false);
   const [stockDrafts, setStockDrafts] = useState({});
+  const [correctionQuery, setCorrectionQuery] = useState('');
+  const [correctionStatusFilter, setCorrectionStatusFilter] = useState('ALL');
   const adminLoadingRef = useRef(false);
   const adminInteractionPauseUntilRef = useRef(0);
 
@@ -325,6 +429,27 @@ function AdminPage() {
   );
 
   const paidOrders = useMemo(() => orders.filter((order) => order.status === 'Payee'), [orders]);
+  const filteredCorrectionOrders = useMemo(() => {
+    const query = correctionQuery.trim().toLowerCase();
+    return activeOrders.filter((order) => {
+      const matchesQuery = !query || getCorrectionSearchText(order).includes(query);
+      const matchesStatus = correctionStatusFilter === 'ALL' || order.status === correctionStatusFilter;
+      return matchesQuery && matchesStatus;
+    });
+  }, [activeOrders, correctionQuery, correctionStatusFilter]);
+  const filteredPaidCorrectionOrders = useMemo(() => {
+    const query = correctionQuery.trim().toLowerCase();
+    return paidOrders.filter((order) => !query || getCorrectionSearchText(order).includes(query)).slice(0, 8);
+  }, [correctionQuery, paidOrders]);
+  const cancelledOrders = useMemo(
+    () =>
+      orders
+        .filter(isCancelledAdminOrder)
+        .sort((firstOrder, secondOrder) =>
+          Date.parse(getOrderActivityDate(secondOrder) || 0) - Date.parse(getOrderActivityDate(firstOrder) || 0),
+        ),
+    [orders],
+  );
   const activeRewards = useMemo(
     () => rewards.filter((reward) => reward.active !== false),
     [rewards],
@@ -341,7 +466,22 @@ function AdminPage() {
     if (!query) return recentExportOrders;
 
     return orders
-      .filter((order) => String(order.id || '').toLowerCase().includes(query))
+      .filter((order) => {
+        const haystack = [
+          order.id,
+          order.backendId,
+          order.table ? `table ${order.table}` : '',
+          order.table,
+          order.clientName,
+          order.clientPhone,
+          order.status,
+          order.paymentMethod,
+        ]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase();
+        return haystack.includes(query);
+      })
       .sort((firstOrder, secondOrder) => Date.parse(secondOrder.createdAt || 0) - Date.parse(firstOrder.createdAt || 0));
   }, [exportDraft.orderId, orders, recentExportOrders]);
   const dashboardRecentOrders = useMemo(() => recentExportOrders.slice(0, 7), [recentExportOrders]);
@@ -756,6 +896,10 @@ function AdminPage() {
   async function saveReward(event) {
     event.preventDefault();
     setError('');
+    if (rewardDraft.type === 'FREE_ITEM' && !rewardDraft.name) {
+      showError('Choisissez un article du menu pour cette recompense.');
+      return;
+    }
     const payload = {
       ...rewardDraft,
       pointsCost: Number(rewardDraft.pointsCost),
@@ -1022,10 +1166,6 @@ function AdminPage() {
               Se connecter
             </button>
           </form>
-          <small>
-            Pour la demo, cree ou transforme un utilisateur en role ADMIN dans MySQL avant de te
-            connecter.
-          </small>
         </section>
       </main>
     );
@@ -1093,42 +1233,88 @@ function AdminPage() {
           <section className="admin-section admin-dashboard-pro">
             <div className="admin-dashboard-command">
               <div>
-                <p className="eyebrow">Vue operationnelle</p>
-                <h2>Controle restaurant</h2>
-                <span>Les chiffres utiles pour agir vite, sans bruit visuel.</span>
+                <p className="eyebrow">Bonjour admin</p>
+                <h2>{restaurantState?.open ? 'Restaurant ouvert' : 'Restaurant ferme'}</h2>
+                <span>
+                  {restaurantState?.open
+                    ? 'Tous les systemes sont operationnels.'
+                    : 'Le restaurant est ferme aux nouvelles commandes.'}
+                </span>
+                <div className="admin-hero-meta">
+                  <small>En ligne</small>
+                  <small>Derniere mise a jour : aujourd hui</small>
+                </div>
               </div>
+              <img alt="Salle restaurant" className="admin-dashboard-command-photo" src={heroImage} />
               <div className="admin-command-status">
-                <strong>{restaurantState?.open ? 'Restaurant ouvert' : 'Restaurant ferme'}</strong>
-                <span>{restaurantState?.orderingPaused ? 'Commandes en pause' : 'Commandes actives'}</span>
-                <small>{restaurantState?.message || 'Aucun message operationnel.'}</small>
+                <button onClick={() => setActiveTab('state')} type="button">
+                  Voir l'etat detaille
+                  <span aria-hidden="true">›</span>
+                </button>
               </div>
             </div>
 
             <div className="admin-priority-grid">
-              <MetricCard icon="AV" label="A valider maintenant" value={dashboard?.ordersToValidate || 0} tone="gold" />
-              <MetricCard icon="KD" label="En cuisine" value={dashboard?.kitchenOrders || 0} />
-              <MetricCard icon="RD" label="Retards cuisine" value={dashboard?.kitchenDelayedOrders || 0} tone="danger" />
-              <MetricCard icon="CA" label="Ventes aujourd hui" value={formatPrice(Number(dashboard?.salesToday || 0))} tone="gold" />
+              <MetricCard iconName="alert" label="A valider maintenant" value={dashboard?.ordersToValidate || 0} hint="Aucune commande" />
+              <MetricCard iconName="menu" label="En cuisine" value={dashboard?.kitchenOrders || 0} hint="Preparation en cours" tone="warning" />
+              <MetricCard iconName="state" label="Retards cuisine" value={dashboard?.kitchenDelayedOrders || 0} hint="Necessite attention" tone="danger" />
+              <MetricCard iconName="slots" label="Ventes aujourd hui" value={formatPrice(Number(dashboard?.salesToday || 0))} hint="Chiffre d'affaires du jour" />
             </div>
 
             <div className="admin-dashboard-layout">
-              <Panel title="Flux de service">
+              <Panel className="admin-dashboard-panel-flow" iconName="state" subtitle="Suivi en temps reel des commandes" title="Flux de service">
                 <div className="admin-flow-grid">
-                  <FlowStep label="A valider" value={dashboard?.ordersToValidate || 0} hint="Serveur doit confirmer" />
-                  <FlowStep label="Cuisine" value={dashboard?.kitchenOrders || 0} hint="Preparation en cours" />
-                  <FlowStep label="Pretes" value={dashboard?.readyOrders || 0} hint="Plateaux a servir" />
-                  <FlowStep label="Additions" value={dashboard?.billRequests || 0} hint="Demandes clients" />
+                  <FlowStep iconName="qr" label="A valider" value={dashboard?.ordersToValidate || 0} hint="A traiter" />
+                  <FlowStep iconName="menu" label="Cuisine" value={dashboard?.kitchenOrders || 0} hint="En preparation" />
+                  <FlowStep iconName="alert" label="Pretes" value={dashboard?.readyOrders || 0} hint="Pretes a servir" />
+                  <FlowStep iconName="stock" label="Additions" value={dashboard?.billRequests || 0} hint="Demandes clients" />
                 </div>
                 <DashboardRealStats stats={serviceStats} />
               </Panel>
 
-              <Panel title="Sante restaurant">
-                <StatusLine label="Commandes actives" value={dashboard?.activeOrders || 0} />
-                <StatusLine label="Tables occupees" value={dashboard?.occupiedTables || 0} />
-                <StatusLine label="Utilisateurs" value={dashboard?.totalUsers || users.length || 0} />
-                <StatusLine label="Produits indisponibles" value={dashboard?.unavailableMenuItems || 0} />
+              <Panel className="admin-dashboard-panel-health" iconName="state" subtitle="Indicateurs cles de performance" title="Sante du restaurant">
+                <StatusLine iconName="staff" hint="En cours de traitement" label="Commandes actives" value={dashboard?.activeOrders || 0} />
+                <StatusLine iconName="qr" hint="En service" label="Tables occupees" value={dashboard?.occupiedTables || 0} />
+                <StatusLine iconName="users" hint="Connectes" label="Utilisateurs" value={dashboard?.totalUsers || users.length || 0} />
+                <StatusLine iconName="reward" hint="Hors service" label="Produits indisponibles" value={dashboard?.unavailableMenuItems || 0} />
+                <div className="admin-health-ok">
+                  <AdminIcon name="state" />
+                  <div>
+                    <strong>Tout fonctionne bien</strong>
+                    <span>Votre restaurant est operationnel et pret a servir.</span>
+                  </div>
+                </div>
               </Panel>
             </div>
+
+            <section className="admin-cancelled-orders-panel">
+              <header>
+                <div>
+                  <span>Suivi incidents</span>
+                  <h2>Commandes annulees</h2>
+                  <p>Motifs saisis par le serveur ou le responsable cuisine.</p>
+                </div>
+                <strong>{cancelledOrders.length}</strong>
+              </header>
+
+              {cancelledOrders.length === 0 ? (
+                <p className="admin-empty-cancellations">Aucune commande annulee pour le moment.</p>
+              ) : (
+                <div className="admin-cancelled-order-list">
+                  {cancelledOrders.slice(0, 6).map((order) => (
+                    <article className="admin-cancelled-order-card" key={order.backendId || order.id}>
+                      <div className="admin-cancelled-order-main">
+                        <span>{getCancellationSource(order)}</span>
+                        <strong>{order.id}</strong>
+                        <small>Table {order.table} - {orderStatusLabel(order.status)}</small>
+                      </div>
+                      <p>{getAdminCancellationReason(order)}</p>
+                      <b>{formatPrice(Number(order.total || 0))}</b>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </section>
 
             <div className="admin-dashboard-layout">
               <Panel title="Clients et commandes">
@@ -1146,102 +1332,16 @@ function AdminPage() {
               </Panel>
             </div>
 
-            <Panel title="Exports commandes">
-              <div className="admin-export-pro">
-                <div className="admin-export-block">
-                  <span className="admin-export-icon">ALL</span>
-                  <div>
-                    <h3>Toutes les commandes</h3>
-                    <p>Telecharger tout l historique charge dans le back-office.</p>
-                  </div>
-                  <div className="admin-card-actions">
-                    <button className="admin-secondary-button" onClick={() => downloadOrdersCsv('all')} type="button">
-                      CSV toutes
-                    </button>
-                    <button className="admin-primary-button" onClick={() => downloadOrdersPdf('all')} type="button">
-                      PDF toutes
-                    </button>
-                  </div>
-                </div>
-
-                <div className="admin-export-block admin-export-block-wide">
-                  <span className="admin-export-icon">ORD</span>
-                  <div>
-                    <h3>Une ou plusieurs commandes</h3>
-                    <p>Recherche par numero de commande, selectionne, puis exporte en CSV ou PDF.</p>
-                  </div>
-                  <Field
-                    label="Numero de commande"
-                    value={exportDraft.orderId}
-                    onChange={(value) => setExportDraft({ ...exportDraft, orderId: value })}
-                    placeholder="Ex: ORD-202605..."
-                  />
-                  <div className="admin-export-selection-toolbar">
-                    <button className="admin-secondary-button" onClick={selectRecentExportOrders} type="button">
-                      Selectionner resultats
-                    </button>
-                    <button className="admin-ghost-button" onClick={clearExportSelection} type="button">
-                      Vider
-                    </button>
-                  </div>
-                  <div className="admin-export-order-list">
-                    {exportSearchOrders.map((order) => {
-                      const orderKey = String(order.backendId || order.id);
-                      const isChecked = selectedExportOrderIds.includes(orderKey);
-                      return (
-                        <label className="admin-export-order-row" key={orderKey}>
-                          <input checked={isChecked} onChange={() => toggleExportOrder(order)} type="checkbox" />
-                          <span>
-                            <strong>{order.id}</strong>
-                            <small>Table {order.table} - {orderStatusLabel(order.status)}</small>
-                          </span>
-                          <b>{formatPrice(Number(order.total || 0))}</b>
-                        </label>
-                      );
-                    })}
-                    {exportSearchOrders.length === 0 && (
-                      <p className="admin-muted">Aucune commande trouvee.</p>
-                    )}
-                  </div>
-                  <div className="admin-card-actions">
-                    <button className="admin-secondary-button" onClick={() => downloadOrdersCsv('selected')} type="button">
-                      CSV selection
-                    </button>
-                    <button className="admin-primary-button" onClick={() => downloadOrdersPdf('selected')} type="button">
-                      PDF selection
-                    </button>
-                    <button className="admin-secondary-button" onClick={() => downloadOrdersCsv('order')} type="button">
-                      CSV recherche
-                    </button>
-                    <button className="admin-primary-button" onClick={() => downloadOrdersPdf('order')} type="button">
-                      PDF recherche
-                    </button>
-                  </div>
-                </div>
-
-                <div className="admin-export-block">
-                  <span className="admin-export-icon">DAY</span>
-                  <div>
-                    <h3>Par date</h3>
-                    <p>Exporter seulement les commandes d une journee precise.</p>
-                  </div>
-                  <Field
-                    label="Date exacte"
-                    type="date"
-                    value={exportDraft.date}
-                    onChange={(value) => setExportDraft({ ...exportDraft, date: value })}
-                  />
-                  <div className="admin-card-actions">
-                    <button className="admin-secondary-button" onClick={() => downloadOrdersCsv('date')} type="button">
-                      CSV date
-                    </button>
-                    <button className="admin-primary-button" onClick={() => downloadOrdersPdf('date')} type="button">
-                      PDF date
-                    </button>
-                  </div>
-                </div>
+            <section className="admin-export-launch">
+              <div>
+                <span className="admin-export-icon">EXPORT</span>
+                <h2>Exports commandes</h2>
+                <p>Ouvrez un espace dedie pour rechercher, selectionner et telecharger les commandes en CSV ou PDF.</p>
               </div>
-            </Panel>
+              <button className="admin-primary-button" onClick={() => setExportDialogOpen(true)} type="button">
+                Exporter commandes
+              </button>
+            </section>
           </section>
         )}
 
@@ -1542,41 +1642,56 @@ function AdminPage() {
             </Panel>
             <Panel title="Equipe">
               <div className="admin-card-list">
-                {staff.map((member) => (
-                  <article className="admin-list-card staff" key={member.id}>
-                    <div>
-                      <strong>{member.name}</strong>
-                      <small>{member.phone}</small>
-                      <span>{member.role} - Tables: {member.assignedTables || 'Toutes / non defini'}</span>
-                    </div>
-                    <span className={member.active ? 'admin-pill success' : 'admin-pill muted'}>
-                      {member.active ? 'Actif' : 'Desactive'}
-                    </span>
-                    <button className="admin-secondary-button" onClick={() => setStaffDraft({ ...member, password: '' })} type="button">
-                      Editer
-                    </button>
-                    <button
-                      className="admin-danger-button"
-                      disabled={!member.active}
-                      onClick={() => runAdminAction(() => deleteAdminStaffApi(member.id), 'Compte staff desactive.')}
-                      type="button"
-                    >
-                      Desactiver
-                    </button>
-                    <button
-                      className="admin-danger-button outline"
-                      onClick={() =>
-                        runAdminAction(
-                          () => deleteAdminStaffPermanentApi(member.id),
-                          'Compte staff supprime definitivement.',
-                        )
-                      }
-                      type="button"
-                    >
-                      Supprimer
-                    </button>
-                  </article>
-                ))}
+                {staff.map((member) => {
+                  const revenueStats = getStaffRevenueStats(member, paidOrders);
+                  return (
+                    <article className="admin-list-card staff" key={member.id}>
+                      <div>
+                        <strong>{member.name}</strong>
+                        <small>{member.phone}</small>
+                        <span>{member.role} - Tables: {member.assignedTables || 'Toutes / non defini'}</span>
+                      </div>
+                      <div className="admin-staff-revenue">
+                        <span>
+                          <small>Aujourd'hui</small>
+                          <strong>{formatPrice(revenueStats.todayTotal)}</strong>
+                          <em>{revenueStats.todayCount} encaissement(s)</em>
+                        </span>
+                        <span>
+                          <small>Ce mois</small>
+                          <strong>{formatPrice(revenueStats.monthTotal)}</strong>
+                          <em>{revenueStats.monthCount} encaissement(s)</em>
+                        </span>
+                      </div>
+                      <span className={member.active ? 'admin-pill success' : 'admin-pill muted'}>
+                        {member.active ? 'Actif' : 'Desactive'}
+                      </span>
+                      <button className="admin-secondary-button" onClick={() => setStaffDraft({ ...member, password: '' })} type="button">
+                        Editer
+                      </button>
+                      <button
+                        className="admin-danger-button"
+                        disabled={!member.active}
+                        onClick={() => runAdminAction(() => deleteAdminStaffApi(member.id), 'Compte staff desactive.')}
+                        type="button"
+                      >
+                        Desactiver
+                      </button>
+                      <button
+                        className="admin-danger-button outline"
+                        onClick={() =>
+                          runAdminAction(
+                            () => deleteAdminStaffPermanentApi(member.id),
+                            'Compte staff supprime definitivement.',
+                          )
+                        }
+                        type="button"
+                      >
+                        Supprimer
+                      </button>
+                    </article>
+                  );
+                })}
               </div>
             </Panel>
           </section>
@@ -1654,11 +1769,50 @@ function AdminPage() {
           <section className="admin-section admin-grid-2">
             <Panel title="Gestion fidelite">
               <form className="admin-form" onSubmit={saveReward}>
-                <Field label="Nom" value={rewardDraft.name} onChange={(value) => setRewardDraft({ ...rewardDraft, name: value })} />
+                {rewardDraft.type === 'FREE_ITEM' ? (
+                  <Select
+                    label="Nom"
+                    value={rewardDraft.name}
+                    onChange={(value) => {
+                      const selectedItem = menuItems.find((item) => item.name === value);
+                      setRewardDraft((current) => ({
+                        ...current,
+                        name: value,
+                        description:
+                          selectedItem && !current.description?.trim()
+                            ? `${selectedItem.name} offert avec les points fidelite.`
+                            : current.description,
+                      }));
+                    }}
+                  >
+                    <option value="">Choisir un article du menu</option>
+                    {menuItems.map((item) => (
+                      <option key={item.id || item.name} value={item.name}>
+                        {item.name} - {item.category || 'Menu'}
+                      </option>
+                    ))}
+                  </Select>
+                ) : (
+                  <Field label="Nom" value={rewardDraft.name} onChange={(value) => setRewardDraft({ ...rewardDraft, name: value })} />
+                )}
                 <Textarea label="Description" value={rewardDraft.description} onChange={(value) => setRewardDraft({ ...rewardDraft, description: value })} />
                 <div className="admin-form-row">
                   <Field label="Cout points" type="number" value={rewardDraft.pointsCost} onChange={(value) => setRewardDraft({ ...rewardDraft, pointsCost: value })} />
-                  <Select label="Type" value={rewardDraft.type} onChange={(value) => setRewardDraft({ ...rewardDraft, type: value })}>
+                  <Select
+                    label="Type"
+                    value={rewardDraft.type}
+                    onChange={(value) =>
+                      setRewardDraft((current) => ({
+                        ...current,
+                        type: value,
+                        name:
+                          value === 'FREE_ITEM' && !menuItems.some((item) => item.name === current.name)
+                            ? ''
+                            : current.name,
+                        discountPercent: value === 'FREE_ITEM' ? '' : current.discountPercent,
+                      }))
+                    }
+                  >
                     <option value="FREE_ITEM">Article offert</option>
                     <option value="DISCOUNT">Reduction</option>
                   </Select>
@@ -1797,68 +1951,306 @@ function AdminPage() {
         )}
 
         {activeTab === 'emergency' && (
-          <section className="admin-section admin-grid-2">
-            <Panel title="Corrections commandes">
-              <div className="admin-card-list">
-                {activeOrders.map((order) => (
-                  <article className="admin-list-card emergency" key={order.backendId}>
-                    <div>
-                      <strong>Table {order.table}</strong>
-                      <small>{order.id} - {orderStatusLabel(order.status)}</small>
-                      <span>{formatPrice(order.total)}</span>
-                    </div>
-                    <button className="admin-danger-button" onClick={() => runAdminAction(() => cancelAdminOrderApi(order.backendId), 'Commande annulee.')} type="button">
-                      Annuler commande
-                    </button>
-                  </article>
-                ))}
-                {activeOrders.length === 0 && <p className="admin-muted">Aucune commande active a corriger.</p>}
+          <section className="admin-section admin-corrections-page">
+            <div className="admin-corrections-hero">
+              <div>
+                <span className="admin-corrections-kicker">Centre de corrections</span>
+                <h2>Interventions sensibles</h2>
+                <p>Annulez des commandes ou rouvrez des paiements seulement en cas d'erreur operationnelle.</p>
               </div>
-            </Panel>
-            <Panel title="Paiements et slots">
-              <div className="admin-card-list">
-                {paidOrders.slice(0, 8).map((order) => (
-                  <article className="admin-list-card emergency" key={order.backendId}>
-                    <div>
-                      <strong>Table {order.table}</strong>
-                      <small>{order.id} - Payee</small>
-                      <span>{formatPrice(order.total)}</span>
-                    </div>
-                    <button className="admin-secondary-button" onClick={() => runAdminAction(() => reopenAdminPaymentApi(order.backendId), 'Paiement rouvert.')} type="button">
-                      Reouvrir paiement
-                    </button>
-                  </article>
-                ))}
-                <button
-                  className="admin-secondary-button"
-                  onClick={() => loadAdminData({ silent: true, force: true })}
-                  type="button"
-                >
-                  Rafraichir etat
-                </button>
-              </div>
-            </Panel>
+              <button
+                className="admin-secondary-button"
+                onClick={() => loadAdminData({ silent: true, force: true })}
+                type="button"
+              >
+                Rafraichir
+              </button>
+            </div>
+
+            <div className="admin-corrections-summary">
+              <article>
+                <span>Commandes annulables</span>
+                <strong>{activeOrders.length}</strong>
+              </article>
+              <article>
+                <span>Paiements rouvrables</span>
+                <strong>{paidOrders.length}</strong>
+              </article>
+              <article>
+                <span>Commandes annulees</span>
+                <strong>{cancelledOrders.length}</strong>
+              </article>
+            </div>
+
+            <div className="admin-corrections-toolbar">
+              <Field
+                label="Recherche"
+                value={correctionQuery}
+                onChange={setCorrectionQuery}
+                placeholder="Commande, table, statut..."
+              />
+              <Select label="Statut commandes" value={correctionStatusFilter} onChange={setCorrectionStatusFilter}>
+                <option value="ALL">Tous les statuts</option>
+                <option value="En attente de validation serveur">A valider</option>
+                <option value="Confirmee par le serveur">En cuisine</option>
+                <option value="Prete / pickup">Prete</option>
+                <option value="Servie">Servie</option>
+              </Select>
+            </div>
+
+            <div className="admin-corrections-grid">
+              <Panel title="Corrections commandes">
+                <div className="admin-correction-list">
+                  {filteredCorrectionOrders.slice(0, 10).map((order) => (
+                    <article className="admin-correction-row" key={order.backendId}>
+                      <div className="admin-correction-table">
+                        <span>Table</span>
+                        <strong>{order.table}</strong>
+                      </div>
+                      <div className="admin-correction-main">
+                        <strong>{order.id}</strong>
+                        <small>Commande active</small>
+                      </div>
+                      <span className={`admin-correction-badge ${getCorrectionStatusTone(order.status)}`}>
+                        {orderStatusLabel(order.status)}
+                      </span>
+                      <b>{formatPrice(order.total)}</b>
+                      <button
+                        className="admin-danger-button"
+                        onClick={() => runAdminAction(() => cancelAdminOrderApi(order.backendId), 'Commande annulee.')}
+                        type="button"
+                      >
+                        Annuler
+                      </button>
+                    </article>
+                  ))}
+                  {filteredCorrectionOrders.length === 0 && <p className="admin-muted">Aucune commande active a corriger.</p>}
+                </div>
+              </Panel>
+
+              <Panel title="Paiements et slots">
+                <div className="admin-correction-list">
+                  {filteredPaidCorrectionOrders.map((order) => (
+                    <article className="admin-correction-row payment" key={order.backendId}>
+                      <div className="admin-correction-table">
+                        <span>Table</span>
+                        <strong>{order.table}</strong>
+                      </div>
+                      <div className="admin-correction-main">
+                        <strong>{order.id}</strong>
+                        <small>Paiement encaisse</small>
+                      </div>
+                      <span className="admin-correction-badge success">Payee</span>
+                      <b>{formatPrice(order.total)}</b>
+                      <button
+                        className="admin-secondary-button"
+                        onClick={() => runAdminAction(() => reopenAdminPaymentApi(order.backendId), 'Paiement rouvert.')}
+                        type="button"
+                      >
+                        Rouvrir
+                      </button>
+                    </article>
+                  ))}
+                  {filteredPaidCorrectionOrders.length === 0 && <p className="admin-muted">Aucun paiement trouve.</p>}
+                </div>
+              </Panel>
+
+              <section className="admin-corrections-audit">
+                <header>
+                  <span>Historique</span>
+                  <h2>Dernieres annulations</h2>
+                </header>
+                <div className="admin-corrections-audit-list">
+                  {cancelledOrders.slice(0, 4).map((order) => (
+                    <article key={order.backendId || order.id}>
+                      <div>
+                        <strong>{order.id}</strong>
+                        <small>Table {order.table} - {getCancellationSource(order)}</small>
+                      </div>
+                      <p>{getAdminCancellationReason(order)}</p>
+                      <b>{formatPrice(Number(order.total || 0))}</b>
+                    </article>
+                  ))}
+                  {cancelledOrders.length === 0 && <p className="admin-muted">Aucune annulation enregistree.</p>}
+                </div>
+              </section>
+
+              <section className="admin-corrections-note">
+                <strong>Bon usage</strong>
+                <p>Chaque correction doit correspondre a une erreur reelle : mauvaise table, paiement saisi trop tot, commande annulee par le client ou incident cuisine.</p>
+              </section>
+            </div>
           </section>
         )}
       </section>
+      {exportDialogOpen && (
+        <ExportOrdersDialog
+          clearSelection={clearExportSelection}
+          downloadOrdersCsv={downloadOrdersCsv}
+          downloadOrdersPdf={downloadOrdersPdf}
+          exportDraft={exportDraft}
+          exportSearchOrders={exportSearchOrders}
+          onClose={() => setExportDialogOpen(false)}
+          orderStatusLabel={orderStatusLabel}
+          orders={orders}
+          selectRecentExportOrders={selectRecentExportOrders}
+          selectedExportOrderIds={selectedExportOrderIds}
+          setExportDraft={setExportDraft}
+          toggleExportOrder={toggleExportOrder}
+        />
+      )}
     </main>
   );
 }
 
-function MetricCard({ icon = 'ID', label, value, tone = 'neutral' }) {
+function ExportOrdersDialog({
+  clearSelection,
+  downloadOrdersCsv,
+  downloadOrdersPdf,
+  exportDraft,
+  exportSearchOrders,
+  onClose,
+  orderStatusLabel,
+  orders,
+  selectRecentExportOrders,
+  selectedExportOrderIds,
+  setExportDraft,
+  toggleExportOrder,
+}) {
+  const selectedCount = selectedExportOrderIds.length;
+  const hasResults = exportSearchOrders.length > 0;
+
+  return (
+    <div className="admin-export-modal-backdrop" role="presentation">
+      <section className="admin-export-modal" role="dialog" aria-modal="true" aria-label="Exporter commandes">
+        <header className="admin-export-modal-header">
+          <div>
+            <span className="admin-export-icon">EXPORT</span>
+            <h2>Exporter les commandes</h2>
+            <p>Recherchez par numero, table, client ou statut, puis exportez tout ou seulement votre selection.</p>
+          </div>
+          <button className="admin-ghost-button admin-export-close" onClick={onClose} type="button">
+            Fermer
+          </button>
+        </header>
+
+        <div className="admin-export-modal-toolbar">
+          <Field
+            label="Rechercher une commande"
+            value={exportDraft.orderId}
+            onChange={(value) => setExportDraft({ ...exportDraft, orderId: value })}
+            placeholder="Ex: ORD, table 4, client, payee..."
+          />
+          <Field
+            label="Filtrer par date"
+            type="date"
+            value={exportDraft.date}
+            onChange={(value) => setExportDraft({ ...exportDraft, date: value })}
+          />
+        </div>
+
+        <div className="admin-export-quick-actions">
+          <article>
+            <strong>Toutes les commandes</strong>
+            <span>{orders.length} commande(s) chargee(s)</span>
+          </article>
+          <div className="admin-card-actions">
+            <button className="admin-secondary-button" onClick={() => downloadOrdersCsv('all')} type="button">
+              Export CSV tout
+            </button>
+            <button className="admin-primary-button" onClick={() => downloadOrdersPdf('all')} type="button">
+              Export PDF tout
+            </button>
+          </div>
+        </div>
+
+        <div className="admin-export-selection-bar">
+          <div>
+            <strong>{selectedCount} selectionnee(s)</strong>
+            <span>{hasResults ? `${exportSearchOrders.length} resultat(s) affiches` : 'Aucun resultat'}</span>
+          </div>
+          <div className="admin-card-actions">
+            <button className="admin-secondary-button" disabled={!hasResults} onClick={selectRecentExportOrders} type="button">
+              Selectionner resultats
+            </button>
+            <button className="admin-ghost-button" disabled={selectedCount === 0} onClick={clearSelection} type="button">
+              Vider selection
+            </button>
+          </div>
+        </div>
+
+        <div className="admin-export-order-list admin-export-modal-list">
+          {exportSearchOrders.map((order) => {
+            const orderKey = String(order.backendId || order.id);
+            const isChecked = selectedExportOrderIds.includes(orderKey);
+            return (
+              <label className="admin-export-order-row" key={orderKey}>
+                <input checked={isChecked} onChange={() => toggleExportOrder(order)} type="checkbox" />
+                <span>
+                  <strong>{order.id}</strong>
+                  <small>
+                    Table {order.table} - {order.clientName || 'Client'} - {orderStatusLabel(order.status)}
+                  </small>
+                </span>
+                <b>{formatPrice(Number(order.total || 0))}</b>
+              </label>
+            );
+          })}
+          {!hasResults && <p className="admin-muted">Aucune commande ne correspond a cette recherche.</p>}
+        </div>
+
+        <footer className="admin-export-modal-footer">
+          <div className="admin-card-actions">
+            <button className="admin-secondary-button" disabled={selectedCount === 0} onClick={() => downloadOrdersCsv('selected')} type="button">
+              Export CSV selection
+            </button>
+            <button className="admin-primary-button" disabled={selectedCount === 0} onClick={() => downloadOrdersPdf('selected')} type="button">
+              Export PDF selection
+            </button>
+          </div>
+          <div className="admin-card-actions">
+            <button className="admin-secondary-button" disabled={!exportDraft.date} onClick={() => downloadOrdersCsv('date')} type="button">
+              CSV date
+            </button>
+            <button className="admin-primary-button" disabled={!exportDraft.date} onClick={() => downloadOrdersPdf('date')} type="button">
+              PDF date
+            </button>
+          </div>
+        </footer>
+      </section>
+    </div>
+  );
+}
+
+function MetricCard({ iconName = 'dashboard', label, value, hint = '', tone = 'neutral' }) {
   return (
     <article className={`admin-metric ${tone}`}>
-      <i aria-hidden="true">{icon}</i>
-      <span>{label}</span>
-      <strong>{value}</strong>
+      <i aria-hidden="true">
+        <AdminIcon name={iconName} />
+      </i>
+      <div>
+        <span>{label}</span>
+        <strong>{value}</strong>
+        {hint ? <small>{hint}</small> : null}
+      </div>
     </article>
   );
 }
 
-function Panel({ title, children }) {
+function Panel({ title, children, className = '', iconName = '', subtitle = '' }) {
   return (
-    <section className="admin-panel">
-      <h2>{title}</h2>
+    <section className={`admin-panel ${className}`}>
+      <header className="admin-panel-heading">
+        {iconName ? (
+          <span className="admin-panel-icon">
+            <AdminIcon name={iconName} />
+          </span>
+        ) : null}
+        <div>
+          <h2>{title}</h2>
+          {subtitle ? <p>{subtitle}</p> : null}
+        </div>
+      </header>
       {children}
     </section>
   );
@@ -1879,21 +2271,35 @@ function ProgressRow({ label, value, max }) {
   );
 }
 
-function StatusLine({ label, value }) {
+function StatusLine({ label, value, hint = '', iconName = '' }) {
   return (
     <div className="admin-status-line">
-      <span>{label}</span>
+      {iconName ? (
+        <span className="admin-status-icon">
+          <AdminIcon name={iconName} />
+        </span>
+      ) : null}
+      <div>
+        <span>{label}</span>
+        {hint ? <small>{hint}</small> : null}
+      </div>
       <strong>{value}</strong>
+      <b aria-hidden="true">›</b>
     </div>
   );
 }
 
-function FlowStep({ label, value, hint }) {
+function FlowStep({ label, value, hint, iconName = 'dashboard' }) {
   return (
     <article className="admin-flow-step">
-      <span>{label}</span>
-      <strong>{value}</strong>
-      <small>{hint}</small>
+      <i aria-hidden="true">
+        <AdminIcon name={iconName} />
+      </i>
+      <div>
+        <span>{label}</span>
+        <strong>{value}</strong>
+        <small>{hint}</small>
+      </div>
     </article>
   );
 }

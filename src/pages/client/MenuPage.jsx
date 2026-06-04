@@ -204,8 +204,9 @@ function ClientIcon({ name, className = '' }) {
     ),
     basket: (
       <>
-        <path d="M4 9h16l-1.6 9H5.6L4 9Z" />
-        <path d="M8 9 12 4l4 5" />
+        <path d="M6.5 8.5h11l-1.1 10h-8.8l-1.1-10Z" />
+        <path d="M9 8.5c0-2 1.3-3.5 3-3.5s3 1.5 3 3.5" />
+        <path d="M9.2 12h5.6" />
       </>
     ),
     menu: (
@@ -390,7 +391,10 @@ function MenuPage() {
   }, [activeCategory, productCategories]);
 
   const nextReward = useMemo(() => {
-    const orderedRewards = [...(rewardsProfile.rewards || [])].sort(
+    const rewardSource = (rewardsProfile.rewards || []).length > 0
+      ? rewardsProfile.rewards
+      : getDefaultLoyaltyRewards().rewards;
+    const orderedRewards = [...rewardSource].sort(
       (firstReward, secondReward) => firstReward.pointsCost - secondReward.pointsCost,
     );
     return (
@@ -398,7 +402,12 @@ function MenuPage() {
       orderedRewards[orderedRewards.length - 1] ||
       null
     );
-  }, [rewardsProfile.totalPoints]);
+  }, [rewardsProfile.rewards, rewardsProfile.totalPoints]);
+
+  const visibleRewards = useMemo(() => {
+    const backendRewards = rewardsProfile.rewards || [];
+    return backendRewards.length > 0 ? backendRewards : getDefaultLoyaltyRewards().rewards;
+  }, [rewardsProfile.rewards]);
 
   const rewardProgress = useMemo(() => {
     if (!nextReward) return 100;
@@ -407,9 +416,9 @@ function MenuPage() {
 
   const selectedReward = useMemo(
     () =>
-      (rewardsProfile.rewards || []).find((reward) => String(reward.id) === String(selectedRewardId)) ||
+      visibleRewards.find((reward) => String(reward.id) === String(selectedRewardId)) ||
       null,
-    [rewardsProfile.rewards, selectedRewardId],
+    [selectedRewardId, visibleRewards],
   );
 
   const rewardDiscountAmount = useMemo(() => {
@@ -1318,8 +1327,7 @@ function MenuPage() {
               </section>
             )}
 
-            {clientTab === 'loyalty' && isClientAuthenticated &&
-              ((rewardsProfile.rewards || []).length > 0 || loyaltyMessage || loyaltyError) && (
+            {clientTab === 'loyalty' && isClientAuthenticated && (
               <section className="client-loyalty-panel">
                 <div className="section-heading compact-section-heading">
                   <h2>Utiliser mes points</h2>
@@ -1333,7 +1341,7 @@ function MenuPage() {
                 )}
 
                 <div className="client-reward-grid">
-                  {(rewardsProfile.rewards || []).map((reward) => {
+                  {visibleRewards.map((reward) => {
                     const canRedeem = rewardsProfile.totalPoints >= reward.pointsCost;
                     const missingPoints = Math.max(0, reward.pointsCost - rewardsProfile.totalPoints);
                     const isSelected = String(selectedRewardId) === String(reward.id);

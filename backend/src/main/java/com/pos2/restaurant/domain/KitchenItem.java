@@ -41,7 +41,7 @@ public class KitchenItem {
     private int quantity;
 
     @Enumerated(EnumType.STRING)
-    @Column(nullable = false)
+    @Column(nullable = false, length = 20)
     private KitchenItemStatus status = KitchenItemStatus.WAITING;
 
     @Column(nullable = false)

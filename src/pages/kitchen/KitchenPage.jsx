@@ -140,6 +140,7 @@ function KitchenPage() {
   const [incidentDialog, setIncidentDialog] = useState(null);
   const [customIncidentReason, setCustomIncidentReason] = useState('');
   const [serverNotice, setServerNotice] = useState('');
+  const [availabilityOpen, setAvailabilityOpen] = useState(false);
   const requestIdRef = useRef(0);
   const hasLoadedRef = useRef(false);
 
@@ -516,9 +517,23 @@ function KitchenPage() {
         ) : null}
 
         {activeScreen === 'manager' ? (
-          <KitchenAvailabilityPanel
+          <section className="kds-products-launch">
+            <div>
+              <span>Disponibilite menu</span>
+              <h2>Produits du restaurant</h2>
+              <p>Ouvrez un espace dedie pour retirer ou remettre un produit avec une raison claire.</p>
+            </div>
+            <button className="kds-primary-action" onClick={() => setAvailabilityOpen(true)} type="button">
+              Gerer les produits
+            </button>
+          </section>
+        ) : null}
+
+        {activeScreen === 'manager' && availabilityOpen ? (
+          <KitchenAvailabilityWindow
             busyKey={busyKey}
             items={menuItems}
+            onClose={() => setAvailabilityOpen(false)}
             onReasonChange={(itemId, reason) =>
               setMenuReasonDrafts((currentDrafts) => ({ ...currentDrafts, [itemId]: reason }))
             }
@@ -565,7 +580,7 @@ function KitchenSlotHero({ ticket }) {
   const slotName = ticket.slotLabel || (slotNumber ? `Slot ${slotNumber}` : 'Slot cuisine');
 
   return (
-    <div className="kds-slot-hero" style={{ background: slotAccent }}>
+    <div className="kds-slot-hero" style={{ '--slot-accent': slotAccent }}>
       <span>Slot cuisine</span>
       <strong>{slotNumber ? `#${slotNumber}` : slotName.replace(/^Slot\s+/i, '')}</strong>
       <small>{slotName}</small>
@@ -814,78 +829,92 @@ function KitchenIncidentDialog({
   );
 }
 
-function KitchenAvailabilityPanel({
+function KitchenAvailabilityWindow({
   busyKey,
   items,
+  onClose,
   onReasonChange,
   onToggleAvailability,
   reasonDrafts,
 }) {
   return (
-    <section className="kds-availability-panel">
-      <header>
-        <div>
-          <span>Disponibilite menu</span>
-          <h2>Produits du restaurant</h2>
+    <div className="kds-modal-backdrop kds-products-backdrop" role="presentation">
+      <section aria-modal="true" className="kds-availability-panel kds-products-window" role="dialog">
+        <header>
+          <div>
+            <span>Disponibilite menu</span>
+            <h2>Produits du restaurant</h2>
+            <p>Le responsable peut retirer un produit du menu client avec une raison claire.</p>
+          </div>
+          <button className="kds-modal-secondary" onClick={onClose} type="button">
+            Fermer
+          </button>
+        </header>
+
+        <div className="kds-products-toolbar">
+          <strong>{items.length} produit(s)</strong>
+          <span>{items.filter((item) => item.available === false).length} indisponible(s)</span>
         </div>
-        <p>Le responsable peut retirer un produit du menu client avec une raison claire.</p>
-      </header>
 
-      <div className="kds-availability-grid">
-        {items.length === 0 ? (
-          <p className="kds-empty-column">Aucun produit charge.</p>
-        ) : (
-          items.map((item) => {
-            const reason = reasonDrafts[item.id] ?? item.unavailableReason ?? UNAVAILABLE_REASONS[0];
-            const actionKey = `menu-${item.id}`;
+        <div className="kds-availability-grid">
+          {items.length === 0 ? (
+            <p className="kds-empty-column">Aucun produit charge.</p>
+          ) : (
+            items.map((item) => {
+              const reason = reasonDrafts[item.id] ?? item.unavailableReason ?? UNAVAILABLE_REASONS[0];
+              const actionKey = `menu-${item.id}`;
 
-            return (
-              <article className={`kds-menu-state-card ${item.available ? '' : 'is-unavailable'}`} key={item.id}>
-                <div>
-                  <span>{item.category}</span>
-                  <strong>{item.name}</strong>
-                  <small>{item.available ? 'Disponible' : item.unavailableReason || reason}</small>
-                </div>
+              return (
+                <article className={`kds-menu-state-card ${item.available ? '' : 'is-unavailable'}`} key={item.id}>
+                  <div className="kds-menu-state-head">
+                    <div>
+                      <span>{item.category}</span>
+                      <strong>{item.name}</strong>
+                      <small>{item.available ? 'Disponible' : item.unavailableReason || reason}</small>
+                    </div>
+                    <b>{item.available ? 'OK' : 'OFF'}</b>
+                  </div>
 
-                <label>
-                  Raison
-                  <select value={reason} onChange={(event) => onReasonChange(item.id, event.target.value)}>
-                    {UNAVAILABLE_REASONS.map((option) => (
-                      <option key={option} value={option}>
-                        {option}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                  <label>
+                    Raison
+                    <select value={reason} onChange={(event) => onReasonChange(item.id, event.target.value)}>
+                      {UNAVAILABLE_REASONS.map((option) => (
+                        <option key={option} value={option}>
+                          {option}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
 
-                <label>
-                  Autre raison
-                  <input
-                    onChange={(event) => onReasonChange(item.id, event.target.value)}
-                    placeholder="Ex: four en panne, sauce terminee..."
-                    type="text"
-                    value={reason}
-                  />
-                </label>
+                  <label>
+                    Autre raison
+                    <input
+                      onChange={(event) => onReasonChange(item.id, event.target.value)}
+                      placeholder="Ex: four en panne, sauce terminee..."
+                      type="text"
+                      value={reason}
+                    />
+                  </label>
 
-                <button
-                  className={`kds-primary-action ${item.available ? '' : 'action-ready'}`}
-                  disabled={busyKey === actionKey}
-                  onClick={() => onToggleAvailability(item, !item.available)}
-                  type="button"
-                >
-                  {busyKey === actionKey
-                    ? 'Mise a jour...'
-                    : item.available
-                      ? 'Desactiver ce plat'
-                      : 'Remettre disponible'}
-                </button>
-              </article>
-            );
-          })
-        )}
-      </div>
-    </section>
+                  <button
+                    className={`kds-primary-action ${item.available ? '' : 'action-ready'}`}
+                    disabled={busyKey === actionKey}
+                    onClick={() => onToggleAvailability(item, !item.available)}
+                    type="button"
+                  >
+                    {busyKey === actionKey
+                      ? 'Mise a jour...'
+                      : item.available
+                        ? 'Desactiver ce plat'
+                        : 'Remettre disponible'}
+                  </button>
+                </article>
+              );
+            })
+          )}
+        </div>
+      </section>
+    </div>
   );
 }
 

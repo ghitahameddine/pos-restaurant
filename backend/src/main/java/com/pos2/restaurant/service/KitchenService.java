@@ -214,6 +214,7 @@ public class KitchenService {
         });
 
         order.recalculateTotals();
+        order.setServerComment("Annulee par la cuisine: " + cancelReason);
         order.setStatus(OrderStatus.CANCELLED);
         kitchenItemRepository.saveAll(items);
         orderRepository.save(order);
