@@ -1,16 +1,31 @@
-# React + Vite
+ Restaurant POS System
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+ About the Project
 
-Currently, two official plugins are available:
+A web-based Point of Sale (POS) system developed as a Final Year Project (PFE).
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+The application aims to provide a digital solution for restaurant management using a modern frontend and backend architecture.
 
-## React Compiler
+ Technologies
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+- Frontend: React.js, JavaScript, Vite
+- Backend: Java, Spring Boot
+- Database: MySQL
 
-## Expanding the ESLint configuration
+ Architecture
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+The project follows a client-server architecture:
+
+- React.js for the user interface.
+- Spring Boot for backend development.
+- MySQL for data storage.
+
+ Project Context
+
+Final Year Project (PFE)
+
+Collaborative development project.
+
+ Development
+
+This project was developed collaboratively as part of an academic project.
